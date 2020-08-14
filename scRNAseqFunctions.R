@@ -10,7 +10,13 @@ library(RColorBrewer)
 library(cowplot)
 library(future)
 library(ggthemes)
-source("/scratch/projects/Hsieh_scRNA/clusterGSEA.R") #add directory path, R doesn't know where this is
+library(roxygen2)
+library(data.table)
+library(reshape2)
+
+roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/singlecell/")
+
+# source("/scratch/projects/Hsieh_scRNA/clusterGSEA.R") #add directory path, R doesn't know where this is
 
 timeFmt <- function() {
   format(Sys.time(), "%y%m%d_%H%M%S")
@@ -23,6 +29,37 @@ GREEN <- "#00cc00"
 RED_ORANGE <- "#ff531a"
 PURPLE_HSIEH <- "#7F559B"
 BRIGHT_PURPLE <- "#9445FF"
+
+#' Assign mitochondrial percent, hbb percent, ribo percent
+#'
+#' @param seurat_object The seurat object to assign meta data to 
+#' @param mt.genes Inputted mitochondrial features, can be left blank
+#' @param ribo.genes Inputted ribosomal features, can be left blank
+#' @param hbb.genes Inputted hemoglobin features, can be left blank
+#'
+#' @return The updated seurat object
+#' @examples iso <- add_meta_percents(iso)
+add_meta_percents <- function(seurat_object, mt.genes = NULL, ribo.genes = NULL, hbb.genes = NULL) {
+  allgenes = rownames(seurat_object@assays$RNA@counts)
+  if (is.null(mt.genes)) {
+    mt.genes <- allgenes[grep("^[Mm][Tt]-", allgenes)]
+  }
+  if (is.null(ribo.genes)) {
+    ribo.genes <- allgenes[grep("^[Rr][Pp][Ss]|[Rr][Pp][Ll]", allgenes)]
+  }
+  if (is.null(hbb.genes)) {
+    hbb.genes <- allgenes[grep("^H[Bb][BbAaQq]", allgenes)]
+  }
+  print(paste0("mt.genes: ", paste(mt.genes, collapse = " ")))
+  print(paste0("ribo.genes: ", paste(ribo.genes, collapse = " ")))
+  print(paste0("hbb.genes: ", paste(hbb.genes, collapse = " ")))
+  
+  #assign and return
+  seurat_object[["percent.mt"]] <- PercentageFeatureSet(object = seurat_object, features = mt.genes)
+  seurat_object[["percent.ribo"]] <- PercentageFeatureSet(object = seurat_object, features = ribo.genes)
+  seurat_object[["percent.hbb"]] <- PercentageFeatureSet(object = seurat_object, features = hbb.genes)
+  return(seurat_object)
+}
 
 pp_plots <- function(seurat_object, dir=".") {
   seurat_object[["percent.mt"]] <- PercentageFeatureSet(object = seurat_object, pattern = "^[Mm][Tt]-")
@@ -143,6 +180,7 @@ sortCharArrayByNum <- function(x) {
 #makes a table of the number of cells per celltype_col, split by sample_col, and makes a barplot from the data (this part should probably just be taken out)
 #requires ggplot
 getCellNumbers <- function(seurat_object, celltype_col = "seurat_clusters", sample_col = "orig.ident", write_output = F, outdir = NULL) {
+  
   sampleNames <- unique(seurat_object@meta.data[,sample_col])
   meta <- seurat_object@meta.data
   celltypes <- unique(meta[,celltype_col])
@@ -882,11 +920,198 @@ slingshotAnalysis <- function(seurat_object) {
   
 }
 
+####### MONOCLE FUNCTIONS
+
+#' Start with either monocle or seurat object, process and return object with default monocle settings
+#' 
+#' @param sc_object The monocle/seurat object used to process
+#' @param var_feats The variable features used to order the cells of the monocle object
+#' 
+#' 
+#' @return The processed monocle object (after OrderCells())
+monocle_proc <- function(sc_object, var_feats) {
+  
+  if (as.character(class(sc_object)) == "Seurat") {
+    print("identifed as a seurat object, converting to monocle...")
+    monocle_object <- as.CellDataSet(sc_object)
+  }
+  monocle_object <- estimateSizeFactors(monocle_object)
+  monocle_object <- estimateDispersions(monocle_object)
+  monocle_object <- setOrderingFilter(monocle_object, var_feats)
+  monocle_object <- reduceDimension(monocle_object, max_components = 2,
+                                     method = 'DDRTree')
+  monocle_object <- orderCells(monocle_object)
+  return(monocle_object)
+} 
+
+#' Finding root node in monocle (amended from monocle website)
+#' @description Finds the suggested root node in a monocle DDRTree object
+#' @param cds The monocle object
+#' @param root_node_name The name of the celltype/timepoint/treatment that would designate a 'root' e.g. undifferentiated cells for a celltype
+#' @param coi Condition of Interest; the column name in phenotype data that was used to bifurcate trajectory
+#' @return An integer: the state number that has the most cells in root_node_name of coi
+GM_state <- function(cds, root_node_name, coi){
+  if (length(unique(pData(cds)$State)) > 1){
+    T0_counts <- table(pData(cds)$State, pData(cds)[,coi])[,root_node_name]
+    return(as.numeric(names(T0_counts)[which
+                                       (T0_counts == max(T0_counts))]))
+  } else {
+    return (1)
+  }
+}
+
+
+#' For creating Pseudotime figures, represented in a percentage bar graph (by coi)
+#'
+#' @param monocle_obj The monocle object used to make the figure, must have already done orderCells()
+#' @param coi The column in pData() that we're using to bin percentages of cells 
+#' @param pseudotime_col The column in pData() that is used as the x-axis (pseudotime is default)
+#' @param binsize The size of a bin used to calculate a percentage
+#' @param overlap The amount of overlap there will be on each bin (by absolute pseudotime_col units)
+#' 
+#' @return A data frame to make a ggplot object representing the bar graph we're trying to make
+#'
+#' @note Freedman-Diaconis suggested: \
+#' https://stats.stackexchange.com/questions/798/calculating-optimal-number-of-bins-in-a-histogram/862
+psuedotime_percent <- function(monocle_obj, 
+                               pseudotime_col = "Pseudotime",
+                               coi = "orig.ident", 
+                               binsize = NULL,
+                               overlap = 0) {
+  if (is.null(binsize)) { #calculate the Freedman-Diaconis suggested binwidth if missing
+    binsize = 2 * IQR(pData(monocle_obj)[,pseudotime_col]) / 
+      length(pData(monocle_obj)[,pseudotime_col])^(1/3)
+  }
+  breaks = seq(0, max(pData(monocle_obj)[,pseudotime_col]), binsize - overlap)
+  nbins = length(breaks)
+  all_coi <- unique(pData(monocle_obj)[,coi])
+  pseudotime_dat <- c()
+  pseudotime_col.max <- max(pData(monocle_obj)[,pseudotime_col])
+  break.last = breaks[1]
+  last = F
+  for (i in 1:(nbins-1)) {
+    break.cur = breaks[i+1] 
+    if (i == nbins) {
+      break.cur = pseudotime_col.max
+      last = T
+    }
+    pseudotime_dat <- rbind(pseudotime_dat, 
+                             get_pct_melt(monocle_obj,  #probably should just change this so that we're feeding it the postiion we're at along with the entire breaks array
+                                          pseudotime_col, 
+                                          coi,
+                                          breaks, 
+                                          i,
+                                          binsize,
+                                          last)
+    )
+    break.last = break.cur #save bin info
+  }
+  colnames(pseudotime_dat)[3] <- pseudotime_col #it's easier to just name it here...
+  pseudotime_dat[,coi] <- as.factor(pseudotime_dat[,coi])
+  # bp <- ggplot(data=pseudotime, aes_string(x = pseudotime_col, y="percent", fill=coi)) +
+  #   geom_bar(stat = "identity", position = "stack")
+  return(pseudotime_dat)
+}
+
+#' Utility function for pseudotime_percent(), creates a single bar in the final barchart
+#'
+#' @param monocle_obj The monocle object used to make the figure, must have already done orderCells()
+#' @param pseudotime_col The column in pData() that is used as the x-axis (pseudotime is default)
+#' @param coi The column in pData() that we're using to bin percentages of cells 
+#' @param breaks The array of breaks made from the pseudotime_col
+#' @param i The position we're at in breaks ( (last) i |--------| i+1 (current))
+#' @param break.cur The larger break in pseudotime_col data
+#' @param binsize The size of a bin used to calculate a percentage
+#' @param last Whether this is the last barplot of the psuedotime_percent() loop
+#' 
+#' @return The melted data to be appended to the full table
+get_pct_melt <- function(monocle_obj, 
+                         pseudotime_col,
+                         coi,
+                         breaks,
+                         i,
+                         binsize,
+                         last) {
+  break.last <- breaks[i]
+  break.cur <- breaks[i+1]
+  cur.frame <- pData(monocle_obj)[
+    which(pData(monocle_obj)[,pseudotime_col] > break.last & 
+            pData(monocle_obj)[,pseudotime_col] < break.cur),]
+  cur.tab <- table(cur.frame[,coi])
+  all_coi <- unique(pData(monocle_obj)[,coi])
+  if (length(cur.tab) < length(all_coi)) {
+    tosettozero <- all_coi[!(all_coi %in% names(cur.tab))]
+    for (x in tosettozero) {
+      cur.tab <- c(cur.tab, x=0)
+      names(cur.tab)[length(cur.tab)] <- x
+    }
+    cur.tab <- as.table(cur.tab)
+  }
+  if (sum(cur.tab) != 0) {
+    cur.tab.pct <- round((cur.tab / sum(cur.tab)), 3)*100 
+  } else {
+    cur.tab.pct <- cur.tab
+  }
+  cur.tab.pct.melt <- suppressWarnings(melt(cur.tab.pct)) #large warning is annoying
+  # cur.tab.pct.melt[,coi] <- rownames(cur.tab.pct.melt)
+  if (all(unlist(lapply(cur.tab.pct.melt, is.numeric)) == c(TRUE, FALSE))) { 
+    #this means percents are in 1st column and labels are in 2nd, need to flip  
+    cur.tab.pct.melt <- cur.tab.pct.melt[,c(2,1)]
+  }
+  colnames(cur.tab.pct.melt) <- c(coi, "percent")
+  if (last) {
+    cur.tab.pct.melt <- cbind(cur.tab.pct.melt, "break"= (break.last + (binsize / 2))) #want to save: coi ident, %, (centerpoint between last and current break)     
+  } else {
+    cur.tab.pct.melt <- cbind(cur.tab.pct.melt, "break"=base::mean(c(break.last, break.cur))) #want to save: coi ident, %, (centerpoint between last and current break)
+  }
+  return(cur.tab.pct.melt)
+}
+ 
+#' Helpful function for plotting the percent of coi and State on top of each other
+#'
+#' @param monocle_obj The monocle object used to make the figure, must have already done orderCells()
+#' @param binsize The size of a bin used to calculate a percentage
+#' @param overlap The amount of overlap there will be on each bin (by absolute pseudotime_col units)
+#' @param coi The column in pData() that we're using to bin percentages of cells 
+#' @param lineplot Whether we want it plotted as a line plot or a barplot
+#' 
+#' @return A grid of 2 ggplot 2 objects stacked 
+pseudotime_pct_plt <- function(monocle_obj,
+                               coi = "orig.ident",
+                               binsize = 0.5,
+                               overlap = 0,
+                               lineplot = F
+                               ) {
+  pseudotime.dat.coi <- psuedotime_percent(monocle_obj = monocle_obj, 
+                                       pseudotime_col = "Pseudotime",
+                                       coi = coi, 
+                                       binsize = binsize,
+                                       overlap = overlap)
+  pseudotime.dat.state <- psuedotime_percent(monocle_obj = monocle_obj, 
+                                       pseudotime_col = "Pseudotime",
+                                       coi = "State", 
+                                       binsize = binsize,
+                                       overlap = overlap)
+  pseudotime_col = "Pseudotime"
+  # barplot of coi
+  p.coi <- ggplot(data=pseudotime.dat.coi, aes_string(x = pseudotime_col, y="percent", fill=coi))
+  p.state <- ggplot(data=pseudotime.dat.state, aes_string(x = pseudotime_col, y="percent", fill="State"))
+  if (lineplot) {
+    p.coi <- p.coi + geom_area(position = "stack") 
+    p.state <- p.state + geom_area(position = "stack") 
+  } else {
+    p.coi <- p.coi + geom_bar(stat = "identity", position = "stack") 
+    p.state <- p.state + geom_bar(stat = "identity", position = "stack") 
+  }
+  
+  p.coi <- p.coi + theme(legend.position = "top")
+  p.state <- p.state + theme(legend.position = "bottom")
+  
+  plot_grid(p.coi, p.state, nrow = 2)
+}
 
 
 
 
-
-
-
+                        
 
