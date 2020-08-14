@@ -982,15 +982,29 @@ psuedotime_percent <- function(monocle_obj,
     binsize = 2 * IQR(pData(monocle_obj)[,pseudotime_col]) / 
       length(pData(monocle_obj)[,pseudotime_col])^(1/3)
   }
-  breaks = seq(0, max(pData(monocle_obj)[,pseudotime_col]), binsize - overlap)
+  if (overlap != 0) {
+    if (binsize %% overlap == 0) {
+      breaks = seq(0, max(pData(monocle_obj)[,pseudotime_col]), overlap)
+      skip = binsize / overlap
+    } else {
+      print(paste0("binsize: ", binsize, 
+                   " is not divisible by overlap: ", overlap , " using overlap = 0"))
+      overlap = 0
+      skip = 1
+      breaks = seq(0, max(pData(monocle_obj)[,pseudotime_col]), binsize)
+    }
+  } else {
+    skip = 1
+    breaks = seq(0, max(pData(monocle_obj)[,pseudotime_col]), binsize)
+  }
   nbins = length(breaks)
   all_coi <- unique(pData(monocle_obj)[,coi])
   pseudotime_dat <- c()
   pseudotime_col.max <- max(pData(monocle_obj)[,pseudotime_col])
   break.last = breaks[1]
   last = F
-  for (i in 1:(nbins-1)) {
-    break.cur = breaks[i+1] 
+  for (i in seq(1,nbins-skip)) {
+    break.cur = breaks[i+skip] 
     if (i == nbins) {
       break.cur = pseudotime_col.max
       last = T
@@ -999,12 +1013,12 @@ psuedotime_percent <- function(monocle_obj,
                              get_pct_melt(monocle_obj,  #probably should just change this so that we're feeding it the postiion we're at along with the entire breaks array
                                           pseudotime_col, 
                                           coi,
-                                          breaks, 
-                                          i,
+                                          break.last,
+                                          break.cur,
                                           binsize,
                                           last)
     )
-    break.last = break.cur #save bin info
+    break.last = breaks[i] #save bin info
   }
   colnames(pseudotime_dat)[3] <- pseudotime_col #it's easier to just name it here...
   pseudotime_dat[,coi] <- as.factor(pseudotime_dat[,coi])
@@ -1018,9 +1032,8 @@ psuedotime_percent <- function(monocle_obj,
 #' @param monocle_obj The monocle object used to make the figure, must have already done orderCells()
 #' @param pseudotime_col The column in pData() that is used as the x-axis (pseudotime is default)
 #' @param coi The column in pData() that we're using to bin percentages of cells 
-#' @param breaks The array of breaks made from the pseudotime_col
-#' @param i The position we're at in breaks ( (last) i |--------| i+1 (current))
-#' @param break.cur The larger break in pseudotime_col data
+#' @param break.last The smaller value for the bin we're calculating
+#' @param break.cur The larger value for the bin we're calculating
 #' @param binsize The size of a bin used to calculate a percentage
 #' @param last Whether this is the last barplot of the psuedotime_percent() loop
 #' 
@@ -1028,12 +1041,10 @@ psuedotime_percent <- function(monocle_obj,
 get_pct_melt <- function(monocle_obj, 
                          pseudotime_col,
                          coi,
-                         breaks,
-                         i,
+                         break.last,
+                         break.cur,
                          binsize,
                          last) {
-  break.last <- breaks[i]
-  break.cur <- breaks[i+1]
   cur.frame <- pData(monocle_obj)[
     which(pData(monocle_obj)[,pseudotime_col] > break.last & 
             pData(monocle_obj)[,pseudotime_col] < break.cur),]
