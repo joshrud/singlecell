@@ -1001,9 +1001,9 @@ psuedotime_percent <- function(monocle_obj,
   all_coi <- unique(pData(monocle_obj)[,coi])
   pseudotime_dat <- c()
   pseudotime_col.max <- max(pData(monocle_obj)[,pseudotime_col])
-  break.last = breaks[1]
   last = F
   for (i in seq(1,nbins-skip)) {
+    break.last = breaks[i]
     break.cur = breaks[i+skip] 
     if (i == nbins) {
       break.cur = pseudotime_col.max
@@ -1018,7 +1018,6 @@ psuedotime_percent <- function(monocle_obj,
                                           binsize,
                                           last)
     )
-    break.last = breaks[i] #save bin info
   }
   colnames(pseudotime_dat)[3] <- pseudotime_col #it's easier to just name it here...
   pseudotime_dat[,coi] <- as.factor(pseudotime_dat[,coi])
