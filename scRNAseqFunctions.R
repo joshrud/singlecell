@@ -16,7 +16,7 @@ library(reshape2)
 
 roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/singlecell/")
 
-# source("/scratch/projects/Hsieh_scRNA/clusterGSEA.R") #add directory path, R doesn't know where this is
+source("~/Repos/singlecell/clusterGSEA.R") #add directory path, R doesn't know where this is
 
 timeFmt <- function() {
   format(Sys.time(), "%y%m%d_%H%M%S")
@@ -242,7 +242,19 @@ getCellNumbers <- function(seurat_object, celltype_col = "seurat_clusters", samp
 #makes umaps with pie charts (needs to be tested, but I know it works for me)
 #requires ggplot, scatterpie
 # to add: check variability of location of cells for a cluster, if it's past a threshold, choose the largest "chunk" of cells for center
+#' umap_withPies
+#' @description Prints a ggplot object and saves in getwd() with table of pie-chart data
+#' @param seurat_object The seurat object with umap already calculated
+#' @param pie_cond The column in meta.data that will be used for proportioning pies
+#' @param pie_loc The column in meta.data that will be used for positioning pies 
+#' @param normalize Whether to normalize (logical)
+#'
+#' @return NULL
 umap_withPies <- function(seurat_object, pie_cond = "orig.ident", pie_loc = "seurat_clusters", normalize = TRUE) {
+  
+  if (normalize) {
+    message("WARNING: normalize function normalizes by proportion of PIE_LOC, not PIE_COND")
+  }
   clusteringRes <- colnames(seurat_object@meta.data)[grep("snn_res", colnames(seurat_object@meta.data))]
   clusteringRes <- unlist(strsplit(clusteringRes, "_"))[length(unlist(strsplit(clusteringRes, "_")))]
   totalCells <- nrow(seurat_object@meta.data)
@@ -296,9 +308,12 @@ umap_withPies <- function(seurat_object, pie_cond = "orig.ident", pie_loc = "seu
   }
   pies$totals <- rowSums(pies[,unique(seurat_object@meta.data[,pie_cond])]) 
   pies.norm <- pies[,unique(seurat_object@meta.data[,pie_cond])]
+  print(pies$totals)
+  print(pies.norm)
   cond.coefs <- sum(pies.norm)/colSums(pies.norm)
   pies.norm.f <- t(apply(pies.norm , 1, function(x) return(cond.coefs * x)))
   colnames(pies.norm.f) <- paste0(colnames(pies.norm.f), ".norm")
+  print(pies.norm.f)
   pies <- cbind(pies, pies.norm.f)
   pies.norm.percentages <- pies.norm.f / rowSums(pies.norm.f)
   colnames(pies.norm.percentages) <- paste0(colnames(pies.norm.f), ".pct")
@@ -306,7 +321,8 @@ umap_withPies <- function(seurat_object, pie_cond = "orig.ident", pie_loc = "seu
   if (normalize) {
     #finally plot the data with the pie charts
     ggplot(data=umap.withmeta, aes_string(x="UMAP_1", y="UMAP_2", group=pie_loc, color=pie_loc)) + geom_point(size=0.3) +
-      geom_scatterpie(data=pies, aes(x=pie.xmed, y=pie.ymed), cols=paste0(unique(seurat_object@meta.data[,pie_cond]), ".norm")) + theme_classic() + 
+      geom_scatterpie(data=pies, aes(x=pie.xmed, y=pie.ymed), cols=paste0(unique(seurat_object@meta.data[,pie_cond]), ".norm"), pie_scale = 4) + 
+      theme_classic() + 
       theme(axis.text = element_blank(), axis.ticks = element_blank(), panel.background = element_rect(fill = "white", color="black"), panel.grid = element_blank()) +
       guides(color = guide_legend(override.aes = list(size = 10))) + 
       labs(title = paste0(seurat_object@project.name, " UMAP with ", clusteringRes), 
@@ -315,7 +331,8 @@ umap_withPies <- function(seurat_object, pie_cond = "orig.ident", pie_loc = "seu
   } else {
     #finally plot the data with the pie charts
     ggplot(data=umap.withmeta, aes_string(x="UMAP_1", y="UMAP_2", group=pie_loc, color=pie_loc)) + geom_point(size=0.3) +
-      geom_scatterpie(data=pies, aes(x=pie.xmed, y=pie.ymed), cols=unique(seurat_object@meta.data[,pie_cond])) + theme_classic() + #, r=log2(totals)/log2(sum(totals)))
+      geom_scatterpie(data=pies, aes(x=pie.xmed, y=pie.ymed), cols=unique(seurat_object@meta.data[,pie_cond]), pie_scale = 4) + 
+      theme_classic() + #, r=log2(totals)/log2(sum(totals)))
       theme(axis.text = element_blank(), axis.ticks = element_blank(), panel.background = element_rect(fill = "white", color="black"), panel.grid = element_blank()) +
       guides(color = guide_legend(override.aes = list(size = 10))) + 
       labs(title = paste0(seurat_object@project.name, " UMAP with ", clusteringRes), 
@@ -323,7 +340,8 @@ umap_withPies <- function(seurat_object, pie_cond = "orig.ident", pie_loc = "seu
   }
   ggsave("umap_with_pie.pdf")
   write.table(pies, "umap_pies_info.txt", sep = "\t", quote = F, col.names = NA)
-  return(umap.withmeta)
+  print(paste0("figures and table are in: ", getwd()))
+  return(NULL)
 } 
 
 #found online, useful for adding stats to a dataframe of celltype proportions (like median bar, SEM, etc..)
@@ -696,7 +714,32 @@ addStats <- function(x, d) {
 #' @param split Whether to do an "UP" and "DOWN" table for markers and GO analysis (best to keep it on)
 #' @return DE results between comps in each coi, with volcanos and GO results for each
 #'
-easyDE <- function(seurat_object, output, comps, coi="seurat_clusters", plotinsig = TRUE, padj_thresh=0.05, orgdb = "org.Mm.eg.db", split = TRUE) {
+easyDE <- function(seurat_object, 
+                   output, comps, 
+                   coi="seurat_clusters", 
+                   plotinsig = TRUE, 
+                   withLabels = T,
+                   padj_thresh=0.05, 
+                   orgdb = "org.Mm.eg.db", 
+                   split = TRUE) {
+  req.packages <- c("clusterProfiler",
+                    "org.Hs.eg.db",
+                    "ggthemes",
+                    "enrichplot",
+                    "DOSE",
+                    "ggplot2")
+  pack.mat <- sapply(req.packages, FUN = function(x) {
+             if (paste0("package:",x) %in% search()) {
+               return(TRUE)
+             } else return(FALSE)
+           } )
+  if (any(!pack.mat)) {
+    print(paste0("packages: ", paste0(req.packages[pack.mat], collapse = " "), " need to be loaded or installed..."))
+    return(NULL)
+  } else {
+    print("good to go :)")
+  }
+  
   if (!exists("go_analysis", where=sys.frame())) {
     print("GO function not loaded, breaking...")
     return(NULL)
@@ -784,10 +827,13 @@ easyDE <- function(seurat_object, output, comps, coi="seurat_clusters", plotinsi
         }
       }
       
-      easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = T, #with labels
-                     plotinsig = F, compfolder = compfolder)
-      easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = F, #without labels
-                     plotinsig = F, compfolder = compfolder)
+      if (withLabels) {
+        easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = T, #with labels
+                       plotinsig = F, compfolder = compfolder)
+      } else {
+        easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = F, #without labels
+                       plotinsig = F, compfolder = compfolder)
+      }
     }  
   }
 }
