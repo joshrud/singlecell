@@ -13,6 +13,7 @@ library(ggthemes)
 library(roxygen2)
 library(data.table)
 library(reshape2)
+library(ks)
 
 roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/singlecell/")
 
@@ -965,6 +966,60 @@ umap_highlight <- function(seurat_object, coi, name = "background", outdir, foc_
 slingshotAnalysis <- function(seurat_object) {
   
 }
+
+#' UMAP with KDE overlay
+#' @description Makes a umap with kernel density estimation path overlay of 50th,85th,and 95th quantiles
+#' @param seurat_object The seurat object with umap already calculated
+#' @param gene The gene to be used for feature plotting
+#' @note Taken from here: https://stackoverflow.com/questions/23437000/how-to-plot-a-contour-line-showing-where-95-of-values-fall-within-in-r-and-in
+#' @return No return
+umap_withKDE <- function(seurat_object,genes) {
+  
+  umap.withmeta <- seurat_object@reductions$umap@cell.embeddings
+  if (length(genes) > 1) {
+    message("more than 1 gene, creating module score...")
+    seurat_object <- AddModuleScore(seurat_object, features = list(genes), name = "genes",
+                                    assay = "RNA")
+    genes = "genes"
+    colnames(seurat_object@meta.data)[ncol(seurat_object@meta.data)] <- genes
+    umap.withmeta <- merge(umap.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(umap.withmeta) <- umap.withmeta[,1]
+    umap.withmeta <- umap.withmeta[,-1]
+    umap.withmeta <- umap.withmeta[order(umap.withmeta[,genes],decreasing = F),]
+    
+  } else {
+    message("only 1 gene, fetching data...")
+    umap.withmeta <- merge(umap.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(umap.withmeta) <- umap.withmeta[,1]
+    umap.withmeta <- umap.withmeta[,-1]
+    genes <- genes[1]
+    umap.withmeta <- merge(umap.withmeta, FetchData(seurat_object,genes,slot="data"), by = "row.names")
+    rownames(umap.withmeta) <- umap.withmeta[,1]
+    umap.withmeta <- umap.withmeta[,-1]
+    umap.withmeta <- umap.withmeta[order(umap.withmeta[,genes],decreasing = F),]
+  }
+  #weighted KDE because I don't care about where points are as much as where expression is
+  set.seed(777)
+  kd <- suppressWarnings(ks::kde(umap.withmeta[,grep("UMAP", colnames(umap.withmeta))], w=umap.withmeta[,genes]) )
+  contour_50 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                      z=estimate, levels=cont["50%"])[[1]])
+  contour_85 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                      z=estimate, levels=cont["85%"])[[1]])
+  contour_95 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                      z=estimate, levels=cont["95%"])[[1]])
+  contour_50 <- data.frame(contour_50)
+  contour_85 <- data.frame(contour_85)
+  contour_95 <- data.frame(contour_95)
+  ggplot(data=umap.withmeta, aes_string(x="UMAP_1",y="UMAP_2",color=genes)) +
+    geom_point() +
+    geom_path(data=contour_95, aes(x, y), color ="black", size=1, linetype="solid") +
+    geom_path(data=contour_85, aes(x, y), color ="#505050", size=1, linetype="solid") +
+    geom_path(data=contour_50, aes(x, y), color ="#6C6C6C", size=1, linetype="solid") +
+    scale_color_gradient(low = "#E5E5E5", high = "#F95738") + #"#FF006E"
+    theme(panel.background = element_rect(fill="white",color="black"))
+}
+
+
 
 ####### MONOCLE FUNCTIONS
 
