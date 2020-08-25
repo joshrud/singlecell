@@ -971,9 +971,11 @@ slingshotAnalysis <- function(seurat_object) {
 #' @description Makes a umap with kernel density estimation path overlay of 50th,85th,and 95th quantiles
 #' @param seurat_object The seurat object with umap already calculated
 #' @param gene The gene to be used for feature plotting
+#' @param contour.input The contours to be made in the figure
 #' @note Taken from here: https://stackoverflow.com/questions/23437000/how-to-plot-a-contour-line-showing-where-95-of-values-fall-within-in-r-and-in
 #' @return No return
-umap_withKDE <- function(seurat_object,genes) {
+umap_withKDE <- function(seurat_object,genes,
+                         contour.input = c(50,85,95)) {
   
   umap.withmeta <- seurat_object@reductions$umap@cell.embeddings
   if (length(genes) > 1) {
@@ -1001,20 +1003,16 @@ umap_withKDE <- function(seurat_object,genes) {
   #weighted KDE because I don't care about where points are as much as where expression is
   set.seed(777)
   kd <- suppressWarnings(ks::kde(umap.withmeta[,grep("UMAP", colnames(umap.withmeta))], w=umap.withmeta[,genes]) )
-  contour_50 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
-                                      z=estimate, levels=cont["50%"])[[1]])
-  contour_85 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
-                                      z=estimate, levels=cont["85%"])[[1]])
-  contour_95 <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
-                                      z=estimate, levels=cont["95%"])[[1]])
-  contour_50 <- data.frame(contour_50)
-  contour_85 <- data.frame(contour_85)
-  contour_95 <- data.frame(contour_95)
+  contours <- list()
+  for (i in contour.input) {
+    contours[[as.character(i)]] <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                                         z=estimate, levels=cont[paste0(i,"%")])[[1]])
+    contours[[as.character(i)]] <- data.frame(contours[[as.character(i)]])
+    contours[[as.character(i)]] <- geom_path(data=contours[[as.character(i)]], aes(x, y), color = "black", size=0.3)
+  }
   ggplot(data=umap.withmeta, aes_string(x="UMAP_1",y="UMAP_2",color=genes)) +
     geom_point() +
-    geom_path(data=contour_95, aes(x, y), color ="black", size=1, linetype="solid") +
-    geom_path(data=contour_85, aes(x, y), color ="#505050", size=1, linetype="solid") +
-    geom_path(data=contour_50, aes(x, y), color ="#6C6C6C", size=1, linetype="solid") +
+    contours + 
     scale_color_gradient(low = "#E5E5E5", high = "#F95738") + #"#FF006E"
     theme(panel.background = element_rect(fill="white",color="black"))
 }
