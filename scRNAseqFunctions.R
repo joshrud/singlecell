@@ -972,48 +972,60 @@ slingshotAnalysis <- function(seurat_object) {
 #' @param seurat_object The seurat object with umap already calculated
 #' @param gene The gene to be used for feature plotting
 #' @param contour.input The contours to be made in the figure
+#' @param reduction The dimensionality reduction in the object ("tsne" or "umap")
 #' @note Taken from here: https://stackoverflow.com/questions/23437000/how-to-plot-a-contour-line-showing-where-95-of-values-fall-within-in-r-and-in
 #' @return No return
-umap_withKDE <- function(seurat_object,genes,
+dimred_withKDE <- function(seurat_object,genes,reduction,
                          contour.input = c(50,85,95)) {
   
-  umap.withmeta <- seurat_object@reductions$umap@cell.embeddings
+  dimred.withmeta <- seurat_object@reductions[[reduction]]@cell.embeddings
   if (length(genes) > 1) {
     message("more than 1 gene, creating module score...")
     seurat_object <- AddModuleScore(seurat_object, features = list(genes), name = "genes",
                                     assay = "RNA")
     genes = "genes"
     colnames(seurat_object@meta.data)[ncol(seurat_object@meta.data)] <- genes
-    umap.withmeta <- merge(umap.withmeta, seurat_object@meta.data, by = "row.names")
-    rownames(umap.withmeta) <- umap.withmeta[,1]
-    umap.withmeta <- umap.withmeta[,-1]
-    umap.withmeta <- umap.withmeta[order(umap.withmeta[,genes],decreasing = F),]
+    dimred.withmeta <- merge(dimred.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
+    dimred.withmeta <- dimred.withmeta[order(dimred.withmeta[,genes],decreasing = F),]
     
   } else {
     message("only 1 gene, fetching data...")
-    umap.withmeta <- merge(umap.withmeta, seurat_object@meta.data, by = "row.names")
-    rownames(umap.withmeta) <- umap.withmeta[,1]
-    umap.withmeta <- umap.withmeta[,-1]
+    dimred.withmeta <- merge(dimred.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
     genes <- genes[1]
-    umap.withmeta <- merge(umap.withmeta, FetchData(seurat_object,genes,slot="data"), by = "row.names")
-    rownames(umap.withmeta) <- umap.withmeta[,1]
-    umap.withmeta <- umap.withmeta[,-1]
-    umap.withmeta <- umap.withmeta[order(umap.withmeta[,genes],decreasing = F),]
+    dimred.withmeta <- merge(dimred.withmeta, FetchData(seurat_object,genes,slot="data"), by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
+    dimred.withmeta <- dimred.withmeta[order(dimred.withmeta[,genes],decreasing = F),]
   }
   #weighted KDE because I don't care about where points are as much as where expression is
   set.seed(777)
-  kd <- suppressWarnings(ks::kde(umap.withmeta[,grep("UMAP", colnames(umap.withmeta))], w=umap.withmeta[,genes]) )
-  contours <- list()
-  for (i in contour.input) {
-    contours[[as.character(i)]] <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
-                                                         z=estimate, levels=cont[paste0(i,"%")])[[1]])
-    contours[[as.character(i)]] <- data.frame(contours[[as.character(i)]])
-    contours[[as.character(i)]] <- geom_path(data=contours[[as.character(i)]], aes(x, y), color = "black", size=0.3)
+  if (reduction == "umap") {
+    colname = "UMAP"
+  } else if (reduction == "tsne") {
+    colname = "tSNE"
   }
-  ggplot(data=umap.withmeta, aes_string(x="UMAP_1",y="UMAP_2",color=genes)) +
+  kd <- suppressWarnings(ks::kde(dimred.withmeta[,grep(colname, colnames(dimred.withmeta))], w=dimred.withmeta[,genes]) )
+  contours <- list()
+  if (length(contour.input) == 1) {
+    col.grad <- "#000000" #just make it black if we only want 1 contour
+  } else {
+    col.grad <- scales::seq_gradient_pal("#888888", "#000000")(seq(0,1,length.out=length(contour.input)))
+  }
+  for (i in seq(1,length(contour.input))) {
+    contours[[as.character(contour.input[i])]] <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                                         z=estimate, levels=cont[paste0(contour.input[i],"%")])[[1]])
+    contours[[as.character(contour.input[i])]] <- data.frame(contours[[as.character(contour.input[i])]])
+    contours[[as.character(contour.input[i])]] <- geom_path(data=contours[[as.character(contour.input[i])]], aes(x, y), color = col.grad[i], size=0.3) 
+  }
+  
+  ggplot(data=dimred.withmeta, aes_string(x=paste0(colname, "_1"),y=paste0(colname, "_2"),color=genes)) +
     geom_point() +
     contours + 
-    scale_color_gradient(low = "#E5E5E5", high = "#F95738") + #"#FF006E"
+    scale_color_gradient(low = "#E5E5E5", high = "#F95738") + #"#FF006E";  #F95738 is orange
     theme(panel.background = element_rect(fill="white",color="black"))
 }
 
