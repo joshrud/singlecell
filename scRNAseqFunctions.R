@@ -1017,9 +1017,10 @@ dimred_withKDE <- function(seurat_object,genes,reduction,
   }
   for (i in seq(1,length(contour.input))) {
     contours[[as.character(contour.input[i])]] <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
-                                                         z=estimate, levels=cont[paste0(contour.input[i],"%")])[[1]])
+                                                         z=estimate, levels=cont[paste0(contour.input[i],"%")])[[1]]) #cont is a part of the kd object
     contours[[as.character(contour.input[i])]] <- data.frame(contours[[as.character(contour.input[i])]])
-    contours[[as.character(contour.input[i])]] <- geom_path(data=contours[[as.character(contour.input[i])]], aes(x, y), color = col.grad[i], size=0.3) 
+    contours[[as.character(contour.input[i])]] <- geom_path(data=contours[[as.character(contour.input[i])]], aes(x, y),
+                                                            color = col.grad[i], size=0.3) 
   }
   
   ggplot(data=dimred.withmeta, aes_string(x=paste0(colname, "_1"),y=paste0(colname, "_2"),color=genes)) +
@@ -1028,6 +1029,122 @@ dimred_withKDE <- function(seurat_object,genes,reduction,
     scale_color_gradient(low = "#E5E5E5", high = "#F95738") + #"#FF006E";  #F95738 is orange
     theme(panel.background = element_rect(fill="white",color="black"))
 }
+
+
+#' Feature Plot with Boundaries
+#' @description Draws boundaries around all the clusters in a dim.red., with expression pattern overlayed, doesn't work great...
+#' 
+#' @param seurat_object The seurat object with umap already calculated
+#' @param gene The gene to be used for feature plotting
+#' @param reduction The dimensionality reduction in the object ("tsne" or "umap")
+#' @param coi The cluster condition of interest, i.e. where the splines are drawn
+#'
+#' @return
+feature_with_boundaries <- function(seurat_object,genes,reduction,coi) {
+  
+  dimred.withmeta <- seurat_object@reductions[[reduction]]@cell.embeddings
+  if (length(genes) > 1) {
+    message("more than 1 gene, creating module score...")
+    seurat_object <- AddModuleScore(seurat_object, features = list(genes), name = "genes",
+                                    assay = "RNA")
+    genes = "genes"
+    colnames(seurat_object@meta.data)[ncol(seurat_object@meta.data)] <- genes
+    dimred.withmeta <- merge(dimred.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
+    dimred.withmeta <- dimred.withmeta[order(dimred.withmeta[,genes],decreasing = F),]
+    
+  } else {
+    message("only 1 gene, fetching data...")
+    dimred.withmeta <- merge(dimred.withmeta, seurat_object@meta.data, by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
+    genes <- genes[1]
+    dimred.withmeta <- merge(dimred.withmeta, FetchData(seurat_object,genes,slot="data"), by = "row.names")
+    rownames(dimred.withmeta) <- dimred.withmeta[,1]
+    dimred.withmeta <- dimred.withmeta[,-1]
+    dimred.withmeta <- dimred.withmeta[order(dimred.withmeta[,genes],decreasing = F),]
+  }
+  #weighted KDE because I don't care about where points are as much as where expression is
+  set.seed(777)
+  if (reduction == "umap") {
+    colname = "UMAP"
+  } else if (reduction == "tsne") {
+    colname = "tSNE"
+  }
+  clusters = sort(unique(dimred.withmeta[,coi]))
+  col.grad <- scales::hue_pal()(length(clusters))
+  contours <- list()
+  for (i in seq(1,length(clusters))) {
+    dimred.withmeta[,coi] <- as.numeric(as.character(dimred.withmeta[,coi]))
+    dimred.withmeta.subset <- dimred.withmeta[which(dimred.withmeta[,coi] == clusters[i]),]
+    kd <- suppressWarnings(ks::kde(dimred.withmeta.subset[, 
+                  grep(colname, colnames(dimred.withmeta))]) )
+    contours[[paste0("cluster_", clusters[i])]] <- with(kd, contourLines(x=eval.points[[1]], y=eval.points[[2]],
+                                                        z=estimate, levels=cont["5%"])[[1]]) #5% looks the best
+    contours[[paste0("cluster_", clusters[i])]] <- data.frame(contours[[paste0("cluster_", clusters[i])]])
+    contours[[paste0("cluster_", clusters[i])]] <- geom_path(data=contours[[paste0("cluster_", clusters[i])]],
+                                                            aes(x, y), color = col.grad[i], size=0.5) 
+  }
+  
+  ggplot(data=dimred.withmeta, aes_string(x=paste0(colname, "_1"),y=paste0(colname, "_2"),color=genes)) +
+    geom_point() +
+    contours + 
+    scale_color_gradient(low = "#E5E5E5", high = "black") + #"#FF006E";  #F95738 is orange
+    theme(panel.background = element_rect(fill="white",color="black"))
+}
+
+#' two_object_sample_correlation
+#'
+#' @description Prints a correlation heatmap with Pearson R values \
+#' for two objects' samples split by each given COI
+#' @param SOs A list of seurat objects to sample so1 and so2 from 
+#' @param COIs A condition of interest for each object to split heatmap by EX: COIs <- list(so1_coi, so2_coi)
+#'
+#' @return NULL (prints the figure instead)
+two_object_sample_correlation <- function(SOs, COIs) {
+  so1 <- SOs[[1]]
+  so2 <- SOs[[2]]
+  coi1 <- COIs[[1]]
+  coi2 <- COIs[[2]]
+  
+  if (!(all(sort(unique(so1@meta.data$orig.ident)) == sort(unique(so2@meta.data$orig.ident))))) {
+    print("object orig.ident's do not match...")
+    return(NULL)
+  } else {
+    name.ordering = sort(unique(so1@meta.data$orig.ident))
+  }
+  if (so1@project.name == "SeuratProject") {
+    name1 = "object1"
+  } else {
+    name1 = so1@project.name
+  }
+  if (so2@project.name == "SeuratProject") {
+    name2 = "object2"
+  } else {
+    name2 = so2@project.name
+  }
+  cor.df <- data.frame(matrix(nrow = length(unique(so1@meta.data[,coi1])),
+                              ncol = length(unique(so2@meta.data[,coi2]))))
+  clusters1 <- sort(unique(so1@meta.data[,coi1]))
+  clusters2 <- sort(unique(so2@meta.data[,coi2]))
+  rownames(cor.df) <- paste0(name1, "_", clusters1)
+  colnames(cor.df) <- paste0(name2, "_", clusters2)
+  for (i in clusters1) {
+    for (j in clusters2) {
+      cur.so1 <- table(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)]) / 
+        table(so1@meta.data$orig.ident)
+      cur.so2 <- table(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)]) / 
+        table(so2@meta.data$orig.ident)
+      cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
+      cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
+      cor.df[paste0(name1, "_", i),paste0(name2, "_", j)] <- cor(cur.so1, cur.so2)
+    }
+  }
+  print(pheatmap(cor.df, display_numbers=T, cluster_cols = F, cluster_rows = F))
+  return(NULL)
+}
+
 
 
 
