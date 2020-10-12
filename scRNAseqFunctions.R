@@ -1141,10 +1141,66 @@ two_object_sample_correlation <- function(SOs, COIs) {
       cor.df[paste0(name1, "_", i),paste0(name2, "_", j)] <- cor(cur.so1, cur.so2)
     }
   }
-  print(pheatmap(cor.df, display_numbers=T, cluster_cols = F, cluster_rows = F))
+  print(pheatmap(cor.df, display_numbers=T, cluster_cols = F, cluster_rows = F, angle_col = 315))
   return(NULL)
 }
 
+#' get_sample_correlation_list
+#'
+#' @description VERY similar to two_object_sample_correlation() except this outputs a list 
+#' of sample %s to use in scatterplot
+#' @param SOs A list of seurat objects to sample so1 and so2 from 
+#' @param COIs A condition of interest for each object to split heatmap by EX: COIs <- list(so1_coi, so2_coi)
+#'
+#' @return NULL (prints the figure instead)
+get_sample_correlation_list <- function(SOs, COIs) {
+  so1 <- SOs[[1]]
+  so2 <- SOs[[2]]
+  coi1 <- COIs[[1]]
+  coi2 <- COIs[[2]]
+  
+  if (!(all(sort(unique(so1@meta.data$orig.ident)) == sort(unique(so2@meta.data$orig.ident))))) {
+    print("object orig.ident's do not match...")
+    return(NULL)
+  } else {
+    name.ordering = sort(unique(so1@meta.data$orig.ident))
+  }
+  if (so1@project.name == "SeuratProject") {
+    name1 = "object1"
+  } else {
+    name1 = so1@project.name
+  }
+  if (so2@project.name == "SeuratProject") {
+    name2 = "object2"
+  } else {
+    name2 = so2@project.name
+  }
+  cor.df <- data.frame(matrix(nrow = length(unique(so1@meta.data[,coi1])),
+                              ncol = length(unique(so2@meta.data[,coi2]))))
+  clusters1 <- sort(unique(so1@meta.data[,coi1]))
+  clusters2 <- sort(unique(so2@meta.data[,coi2]))
+  rownames(cor.df) <- paste0(name1, "_", clusters1)
+  colnames(cor.df) <- paste0(name2, "_", clusters2)
+  cor.list <- list()
+  for (i in clusters1) {
+    for (j in clusters2) {
+      cur.so1 <- table(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)]) / 
+        table(so1@meta.data$orig.ident)
+      cur.so2 <- table(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)]) / 
+        table(so2@meta.data$orig.ident)
+      cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
+      cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
+      
+      cor.temp <- cbind.data.frame(as.vector(cur.so1), as.vector(cur.so2))
+      colnames(cor.temp) <- c(paste0(name1, "_", i),paste0(name2, "_", j))
+      rownames(cor.temp) <- name.ordering
+      fullname <- paste0(paste0(name1, "_", i), "__", paste0(name2, "_", j))
+      cor.list <- append(cor.list, list(cor.temp))
+      names(cor.list)[length(names(cor.list))] <- fullname
+    }
+  }
+  return(cor.list)
+}
 
 
 
@@ -1158,16 +1214,19 @@ two_object_sample_correlation <- function(SOs, COIs) {
 #' 
 #' @return The processed monocle object (after OrderCells())
 monocle_proc <- function(sc_object, var_feats) {
-  
+  message("converting to monocle object...")
   if (as.character(class(sc_object)) == "Seurat") {
     print("identifed as a seurat object, converting to monocle...")
     monocle_object <- as.CellDataSet(sc_object)
   }
+  message("performing normalization...")
   monocle_object <- estimateSizeFactors(monocle_object)
   monocle_object <- estimateDispersions(monocle_object)
   monocle_object <- setOrderingFilter(monocle_object, var_feats)
+  message("calculating ddrtree...")
   monocle_object <- reduceDimension(monocle_object, max_components = 2,
                                      method = 'DDRTree')
+  message(paste0("ordering cells with variable genes (",length(var_feats) ,")..."))
   monocle_object <- orderCells(monocle_object)
   return(monocle_object)
 } 
