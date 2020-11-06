@@ -1,7 +1,9 @@
+# These are various useful functions for analysis of single cell data 
+# if using Rstudio, the "outline" feature is VERY useful for finding each function
+
 library(ggrepel)
 library(Seurat) #using v3.1.1
 library(ggplot2)
-# library(ggradar)
 library(dplyr)
 library(pheatmap)
 library(viridis)
@@ -13,7 +15,7 @@ library(ggthemes)
 library(roxygen2)
 library(data.table)
 library(reshape2)
-library(ks)
+library(ks) #this is for kde, don't need this for (most) functions
 
 roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/singlecell/")
 
@@ -1098,16 +1100,23 @@ feature_with_boundaries <- function(seurat_object,genes,reduction,coi) {
 #'
 #' @description Prints a correlation heatmap with Pearson R values \
 #' for two objects' samples split by each given COI
+#' @note Using spearman correlation uses raw cell numbers instead of percentages of sample
+#' 
 #' @param SOs A list of seurat objects to sample so1 and so2 from 
 #' @param COIs A condition of interest for each object to split heatmap by EX: COIs <- list(so1_coi, so2_coi)
-#'
+#' @param statmethod The correlation statistic, either pearson or spearman 
+#' @param cellpcts Boolean, whether we want percentage of orig.ident or raw cell numbers
 #' @return NULL (prints the figure instead)
-two_object_sample_correlation <- function(SOs, COIs) {
+two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", cellpcts=T) {
   so1 <- SOs[[1]]
   so2 <- SOs[[2]]
   coi1 <- COIs[[1]]
   coi2 <- COIs[[2]]
   
+  if (statmethod != "pearson" && statmethod != "spearman") {
+    print("statmethod must either be pearson or spearman, breaking...")
+    return(NULL)
+  }
   if (!(all(sort(unique(so1@meta.data$orig.ident)) == sort(unique(so2@meta.data$orig.ident))))) {
     print("object orig.ident's do not match...")
     return(NULL)
@@ -1132,13 +1141,18 @@ two_object_sample_correlation <- function(SOs, COIs) {
   colnames(cor.df) <- paste0(name2, "_", clusters2)
   for (i in clusters1) {
     for (j in clusters2) {
-      cur.so1 <- table(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)]) / 
-        table(so1@meta.data$orig.ident)
-      cur.so2 <- table(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)]) / 
-        table(so2@meta.data$orig.ident)
+      if (cellpcts) {
+        cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering)) / 
+          table(so1@meta.data$orig.ident)
+        cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering)) / 
+          table(so2@meta.data$orig.ident)
+      } else {
+        cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering))
+        cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering))
+      } 
       cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
       cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
-      cor.df[paste0(name1, "_", i),paste0(name2, "_", j)] <- cor(cur.so1, cur.so2)
+      cor.df[paste0(name1, "_", i),paste0(name2, "_", j)] <- cor(cur.so1, cur.so2, method = statmethod)
     }
   }
   print(pheatmap(cor.df, display_numbers=T, cluster_cols = F, cluster_rows = F, angle_col = 315))
@@ -1149,11 +1163,13 @@ two_object_sample_correlation <- function(SOs, COIs) {
 #'
 #' @description VERY similar to two_object_sample_correlation() except this outputs a list 
 #' of sample %s to use in scatterplot
+#' @note Using spearman correlation uses raw cell numbers instead of percentages of sample
+#' 
 #' @param SOs A list of seurat objects to sample so1 and so2 from 
 #' @param COIs A condition of interest for each object to split heatmap by EX: COIs <- list(so1_coi, so2_coi)
-#'
+#' @param cellpcts Boolean, whether we want percentage of orig.ident or raw cell numbers
 #' @return NULL (prints the figure instead)
-get_sample_correlation_list <- function(SOs, COIs) {
+get_sample_correlation_list <- function(SOs, COIs, cellpcts=T) {
   so1 <- SOs[[1]]
   so2 <- SOs[[2]]
   coi1 <- COIs[[1]]
@@ -1184,10 +1200,15 @@ get_sample_correlation_list <- function(SOs, COIs) {
   cor.list <- list()
   for (i in clusters1) {
     for (j in clusters2) {
-      cur.so1 <- table(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)]) / 
-        table(so1@meta.data$orig.ident)
-      cur.so2 <- table(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)]) / 
-        table(so2@meta.data$orig.ident)
+      if (cellpcts) {
+        cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering)) / 
+          table(so1@meta.data$orig.ident)
+        cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering)) / 
+          table(so2@meta.data$orig.ident)
+      } else {
+        cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering))
+        cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering))
+      } 
       cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
       cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
       
@@ -1196,13 +1217,41 @@ get_sample_correlation_list <- function(SOs, COIs) {
       rownames(cor.temp) <- name.ordering
       fullname <- paste0(paste0(name1, "_", i), "__", paste0(name2, "_", j))
       cor.list <- append(cor.list, list(cor.temp))
-      names(cor.list)[length(names(cor.list))] <- fullname
+      names(cor.list)[length(cor.list)] <- fullname
     }
   }
   return(cor.list)
 }
 
-
+#' better_get_cell_numbers
+#'
+#' @param so 
+#' @param COIs 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+get_cell_percents <- function(so, coi) {
+  
+  name.ordering = sort(unique(so@meta.data$orig.ident))
+  cor.df <- data.frame(matrix(nrow = length(unique(so@meta.data[,coi])),
+                              ncol = length(unique(so@meta.data$orig.ident))))
+  clusters.in <- as.character(sort(unique(so@meta.data[,coi])))
+  clusters.in.names <- paste0(coi, "_", clusters.in)
+  clusters.orig <- as.character(sort(unique(so@meta.data$orig.ident)))
+  rownames(cor.df) <- clusters.in
+  colnames(cor.df) <- clusters.orig
+  
+  for (i in clusters.in) {
+    cur <- table(factor(so@meta.data$orig.ident[which(so@meta.data[,coi]==i)], levels=name.ordering)) / 
+      table(so@meta.data$orig.ident)
+    cur <- cur[match(name.ordering, names(cur))]
+    cor.df[i,] <- cur
+  }
+  
+  return(cor.df)
+}
 
 ####### MONOCLE FUNCTIONS
 
