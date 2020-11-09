@@ -1223,16 +1223,18 @@ get_sample_correlation_list <- function(SOs, COIs, cellpcts=T) {
   return(cor.list)
 }
 
-#' better_get_cell_numbers
+#' get_cell_percents
+#' @description Outputs a table of percentages of samples that come from cells in each coi
 #'
 #' @param so 
 #' @param COIs 
+#' @param raw Whether to get actual cell numbers instead of percentages of orig.ident
 #'
 #' @return
 #' @export
 #'
 #' @examples
-get_cell_percents <- function(so, coi) {
+get_cell_percents <- function(so, coi, raw=F) {
   
   name.ordering = sort(unique(so@meta.data$orig.ident))
   cor.df <- data.frame(matrix(nrow = length(unique(so@meta.data[,coi])),
@@ -1243,11 +1245,19 @@ get_cell_percents <- function(so, coi) {
   rownames(cor.df) <- clusters.in
   colnames(cor.df) <- clusters.orig
   
-  for (i in clusters.in) {
-    cur <- table(factor(so@meta.data$orig.ident[which(so@meta.data[,coi]==i)], levels=name.ordering)) / 
-      table(so@meta.data$orig.ident)
-    cur <- cur[match(name.ordering, names(cur))]
-    cor.df[i,] <- cur
+  if (raw) {
+    for (i in clusters.in) {
+      cur <- table(factor(so@meta.data$orig.ident[which(so@meta.data[,coi]==i)], levels=name.ordering))
+      cur <- cur[match(name.ordering, names(cur))]
+      cor.df[i,] <- cur
+    }
+  } else {
+    for (i in clusters.in) {
+      cur <- table(factor(so@meta.data$orig.ident[which(so@meta.data[,coi]==i)], levels=name.ordering)) / 
+        table(so@meta.data$orig.ident)
+      cur <- cur[match(name.ordering, names(cur))]
+      cor.df[i,] <- cur
+    }
   }
   
   return(cor.df)
