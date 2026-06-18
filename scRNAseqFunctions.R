@@ -1,8 +1,9 @@
 # These are various useful functions for analysis of single cell data 
-# if using Rstudio, the "outline" feature is VERY useful for finding each function
+# if using Rstudio, the "outline" feature is VERY useful for finding each function#prevents a sourcefile() run of the whole thing
 
 library(ggrepel)
 library(Seurat) #using v3.1.1
+library(monocle) #2.14.0
 library(ggplot2)
 library(dplyr)
 library(pheatmap)
@@ -16,22 +17,242 @@ library(roxygen2)
 library(data.table)
 library(reshape2)
 library(ks) #this is for kde, don't need this for (most) functions
+library(jmuOutlier)
+library(scales)
+library(fgsea)
+library(biomaRt)
+library(ggrepel)
 
-roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/singlecell/")
+####### CONSTANTS ######
+GSEA_REF_DIR = "/data/annotations/gsea"
+LIGHTGRAY = "#EBEBEB"
+GRAY <- "#e6e6e6"
+PURPLE <- "#8533ff"
+GREEN <- "#00cc00"
+RED_ORANGE <- "#FF531A"
+ENERGETIC_RED <- "#FF004C"
+PURPLE_HSIEH <- "#7F559B"
+BRIGHT_PURPLE <- "#9445FF"
+PIONYR_COLS <- c("#323B94", "#2D9646", "#3F3F3F", "#000000")
+  
+########################
 
-source("~/Repos/singlecell/clusterGSEA.R") #add directory path, R doesn't know where this is
+
+###### Preprocess #########
+HUMAN_GENES <- useMart(biomart="ensembl",
+                       host = "https://dec2021.archive.ensembl.org",
+                       dataset="hsapiens_gene_ensembl")
+MOUSE_GENES <- useMart(biomart="ensembl",
+                       host = "https://dec2021.archive.ensembl.org",
+                       dataset="mmusculus_gene_ensembl")
+MMU_HSA_HOMOLOGY_ <- read.table(file.path("/data/annotations",
+                                          "HOM_MouseHumanSequence.rpt.txt"),
+                                sep = "\t", header=T)
+MMU_HSA_HOMOLOGY_.mouse <- MMU_HSA_HOMOLOGY_[MMU_HSA_HOMOLOGY_$Common.Organism.Name == "mouse, laboratory",] 
+MMU_HSA_HOMOLOGY_.human <- MMU_HSA_HOMOLOGY_[MMU_HSA_HOMOLOGY_$Common.Organism.Name == "human",] 
+MMU_HSA_HOMOLOGY <-  merge(MMU_HSA_HOMOLOGY_.mouse, MMU_HSA_HOMOLOGY_.human,
+                           by="DB.Class.Key", suffixes=c(".mmu", ".hsa"))
+###########################
+
+
+# roxygen2::roxygenize(package.dir = "/Users/jrudolph/Repos/pionyrtx_codebase/scrna")
+
+source("~/Repos/old/singlecell/clusterGSEA.R") #add directory path, R doesn't know where this is
 
 timeFmt <- function() {
   format(Sys.time(), "%y%m%d_%H%M%S")
 }
 
-LIGHTGRAY = "#D4D3D2"
-GRAY <- "#e6e6e6"
-PURPLE <- "#8533ff"
-GREEN <- "#00cc00"
-RED_ORANGE <- "#ff531a"
-PURPLE_HSIEH <- "#7F559B"
-BRIGHT_PURPLE <- "#9445FF"
+
+# this doesn't work exactly how I want it, but is decent for now
+#   colors get duplicated because doing a 180º offset is tricky:
+#   when we do the second color angle vector, we need an offset,
+#   the offset, unfortunately, causes duplications anyway
+#   can't figure out how to do both color wheels simultaneously 
+#   without duplicating a color; maybe I'm missing something critical? 
+barplot_cols <- function(n) {
+  sub360 <- function(x) {
+    if (x > 360) {
+      return((x-(360 * (floor(x/360)))))
+    } else return(x)
+  }
+  anglesize = round(360 / n)
+  angleoffset = round(anglesize / 2)
+  angles1 <- seq(0,360,anglesize)
+  angles2 <- seq((0+180),(180+360),anglesize)
+  angles2 <- unlist(sapply(angles2, sub360))
+  angles2 <- sapply(angles2, `+`, angleoffset)
+  cols1 <- sapply(angles1, hcl, l=70, c=100)
+  cols2 <- sapply(angles2, hcl, l=70, c=100)
+  cols <- cols1 %zip% cols2
+  return(cols)
+}
+
+
+#' `%zip`
+#' @description Works just like the zip() definition in python, but is used like so: x %zip% y 
+#' @param x A vector 
+#' @param y another vector
+#'t
+#' @return An interleaved vector of x and y
+#'
+#' @examples c(1,2,3) %zip% c(4,5,6) = c(1,4,2,5,3,6)
+`%zip%` <- function(x,y) {
+  if (length(x) != length(y)) {
+    stop("unequal lengths of vectors to zip...")
+  }
+  final <- c()
+  for (i in 1:min(length(x), length(y))) {
+    final <- c(final, x[1], y[1])
+    x <- x[-1]
+    y <- y[-1]
+  }
+  return(final)
+}
+
+#' convertHumanGeneList
+#' @author https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+#' @author https://www.biostars.org/p/315520/
+#' @description For converting gene lists from human to mouse
+#' @param x Human gene list
+#'
+#' @return a mouse gene list
+convertHumanGeneList <- function(x){
+  genesV2 = getLDS(attributes = c("hgnc_symbol"), 
+                   filters = "hgnc_symbol", 
+                   values = ANNOT_HUMAN$`Gene name` , 
+                   mart = HUMAN_GENES, 
+                   attributesL = c("mgi_symbol"), 
+                   martL = MOUSE_GENES, 
+                   uniqueRows=T)
+  humanx <- unique(genesV2[, 2])
+  return(humanx)
+}
+
+#' convertMouseGeneList
+#' @note DEPRECATION: this function is now deprectated in favor of using convertMouseRanks2Hum()
+#' 
+#' 
+#' 
+#' 
+#' @author https://www.r-bloggers.com/2016/10/converting-mouse-to-human-gene-names-with-biomart-package/
+#' @author https://www.biostars.org/p/315520/
+#' @description For converting gene lists from mouse to human
+#' @param x Mouse gene list
+#'
+#' @return a huan gene list
+# convertMouseGeneList <- function(x){
+#   genesV2 = getLDS(attributes = c("mgi_symbol"), 
+#                    filters = "mgi_symbol", 
+#                    values = x , 
+#                    mart = MOUSE_GENES, 
+#                    attributesL = c("hgnc_symbol"), 
+#                    martL = HUMAN_GENES, 
+#                    uniqueRows=T)
+#   humanx <- unique(genesV2[, 2])
+#   return(humanx)
+# }
+
+
+#' hsa2mmu
+#' @description Converts human genes to mouse genes for GSEA analysis 
+#' @author JR
+#' @param x the array of human gene names 
+#' @param opt the option for choosing the matching mouse id; can be "first" or "all" 
+#' @return an array of mouse gene names matching the order of the original human gene names
+hsa2mmu <- function(x, opt = "all") {
+  y <- c()
+  count=0
+  for (i in seq_along(x)) {
+    temp <- MMU_HSA_HOMOLOGY$Symbol.mmu[which(MMU_HSA_HOMOLOGY$Symbol.hsa == x[i])]
+    if (length(temp) > 1) {
+      message(paste0("Symbol ", x[i], " has ", length(temp), " features: ", paste(temp, collapse=", ")))
+      count <- count+1
+      if (opt=="first") {
+        y <- c(y, temp[1]) # include only the first matching one, can miss some
+        
+        ### should be improved so that each match has a score based on how mismatched it is, least mismatched is chosen instead of first ....
+        
+      } else if (opt=="all") {
+        for (j in seq_along(temp)) { # include all of the matching ones
+          y <- c(y, temp[j])
+        }
+      } else {
+        message("opt needs to be either \"first\" or \"all\" ")
+        return(character(0)) 
+      }
+    } else {
+      y <- c(y, temp)
+    }
+  }
+  message("there were ", count, " genes in human list that had more than 1 mouse gene")
+  message("there are ", length(y[duplicated(y)]), " duplicated genes in final list, removing..." )
+  y <- y[!duplicated(y)]
+  message("there are now ", length(y), " genes in final list." )
+  return(y)
+}
+
+
+
+# input is a rank file as if it were going into fgsea, but\
+#  instead we'll output a similar rank file with human names
+convertMouseRanks2Hum <- function(x) {
+  # some mmu genes have multiple homologous genes in human,\
+  #  Cxcl3, for example, is homologous to CXCL1, CXCL2,and CXCL3
+  # solution: add ALL to the new list and return that 
+  y <- c()
+  if (exists("MMU_HSA_HOMOLOGY", sys.frame())) {
+    for (i in seq_along(x)) {
+      x.human <- MMU_HSA_HOMOLOGY$Symbol.hsa[which(MMU_HSA_HOMOLOGY$Symbol.mmu == names(x)[i])]
+      if (identical(x.human, character(0))) {
+        next
+      }
+      if (length(x.human) > 1) {
+        for (j in seq_along(x.human)) {
+          if (length(y) == 0) {
+            y <- x[i]
+            names(y) <- x.human[j]
+          } else {
+            y <- c(y, x[i])
+            names(y)[length(y)] <- x.human[j]
+          }
+        }
+      } else {
+        if (length(y) == 0) {
+          y <- x[i]
+          names(y) <- x.human
+        } else {
+          y <- c(y, x[i])
+          names(y)[length(y)] <- x.human
+        }
+      }
+    }
+  } else {
+    stop("must load MMU_HSA_HOMOLOGY...")
+  }
+  
+  # now get unique names
+  y.u <- unique(names(y))
+  y.final <- c()
+  for (i in seq_along(y.u)) {
+    if (length(y[names(y) == y.u[i]]) > 1) {
+      if (length(y.final) == 0) {
+        y.final <- median(y[which(names(y) == y.u[i])])
+        names(y.final)[i] <- y.u[i]
+      } else {
+        y.final <- c(y.final, median(y[which(names(y) == y.u[i])]))
+        names(y.final)[i] <- y.u[i]
+      }
+    } else {
+      if (length(y.final) == 0) {
+        y.final <- y[which(names(y) == y.u[i])]
+      } else {
+        y.final <- c(y.final, y[which(names(y) == y.u[i])])
+      }
+    }
+  }
+  return(y.final)
+}
 
 #' Assign mitochondrial percent, hbb percent, ribo percent
 #'
@@ -96,7 +317,8 @@ pp <- function(seurat_object, HEMOGENES=NULL, subset=TRUE, SCT = FALSE, VAR.FEAT
     seurat_object <- subset(x = seurat_object, subset = nFeature_RNA > MIN_FEATURES_PER_CELL & nFeature_RNA < MAX_FEATURES_PER_CELL & percent.mt < MAX_PERCENT_MT)
   }
   if (SCT) {
-    seurat_object <- SCTransform(seurat_object, vars.to.regress = "percent.mt") #use this to replace scaledata if it's not good enough
+    seurat_object <- SC
+    Transform(seurat_object, vars.to.regress = "percent.mt") #use this to replace scaledata if it's not good enough
   } else {
     seurat_object <- NormalizeData(seurat_object, normalization.method = "LogNormalize", scale.factor = 1e4)
     seurat_object <- FindVariableFeatures(object = seurat_object, selection.method = 'vst', nfeatures = VAR.FEATURES)
@@ -463,228 +685,6 @@ summarySEwithin <- function(data=NULL, measurevar, betweenvars=NULL, withinvars=
 }
 
 
-library(DirichletReg)
-calcDirichlet <- function(counts, covariates) {
-  counts$counts <- DR_data(counts)
-  data <- cbind(counts, covariates)
-  data$condition <- factor(data$condition, levels=c("myometrium", "med12pos", "med12neg"))
-  fit = DirichReg(counts ~ condition, data, verbosity = 0)
-  u = summary(fit)
-  pvals = u$coef.mat[, 4] #grep('Intercept', rownames(u$coef.mat), invert=T)
-  v = names(pvals)
-  pvals = matrix(pvals, ncol=length(u$varnames))
-  rownames(pvals) = gsub('condition', '', v[1:nrow(pvals)])
-  # colnames(pvals) = u$varnames
-  colnames(pvals) <- paste0("cluster_", sort(unique(seurat_object@meta.data$seurat_clusters)))
-  rownames(pvals)[grep("Intercept", rownames(pvals))] <- "Intercept" #paste0(as.character(unique(data$condition)[which(!(unique(data$condition) %in% rownames(pvals)))]), " (Int)")
-  return(pvals)
-}
-
-###
-# barPlotsWmedian() {} compiles boxplot data from seurat object for printing in ggplot
-### makes celltype proportion boxplots, x=cluster, y=% of sample, group=condition 
-### condition & orig.ident REQUIRED for this function to work
-# seurat_object: a seurat object with 'condition' column in meta.data, clustering performed, and samples named in orig.ident
-# name: some name to use for output naming
-# ordering: expected order of clustering factors
-# conditional_ordering: listed conditions (1 for each sample) in expected order
-## condition ordering ex: c(rep("myometrium", 5), rep("med12pos", 5), rep("med12neg", 3))
-# celltype_col: column in meta.data used for grouping the data (usually 'celltype' or 'seurat_clusters')
-# type: using median or mean style figures (median currently preferred)
-# outdir: directory to output to 
-# withDirichlet: an option to write a table with pvalues according to dirichlet multinomial regression (debatable, anova is better)
-###
-barPlotsWmedian <- function(seurat_object, name, ordering = NULL, #condition_ordering = NULL, # condition order assignment messes things up
-                            celltype_col = NULL, type="median", stats = "anova",  outdir) { #colorscheme=NULL,
-  # if (!is.null(colorscheme)) {
-  #   if (!(length(colorscheme) == length(unique(seurat_object@meta.data[,celltype_col])))) {
-  #     print("celltype col length and colorscheme don't match, breaking...")
-  #     break
-  #   }
-  # }
-  if (is.null(celltype_col)) {
-    celltypeNums <- getCellNumbers(seurat_object, celltype_col = "seurat_clusters", sample_col = "orig.ident")
-  } else {
-    celltypeNums <- getCellNumbers(seurat_object, celltype_col = celltype_col, sample_col = "orig.ident")
-  }
-  if (is.null(ordering)) {
-    ordering = sort(colnames(celltypeNums))
-  }
-  celltypeNums <- celltypeNums[,ordering] 
-  celltypeNums.pctOfSmple <- round(t(celltypeNums) / colSums(celltypeNums), 3)*100 
-  condition_ordering <- as.vector(sapply(ordering, function(x) {
-    return(unique(seurat_object@meta.data$condition[which(seurat_object@meta.data$orig.ident == x)]))}))
-  covariates <- data.frame("condition"=condition_ordering) #when celltypeNums uses orig.ident
-  celltypeNums.wconds <- cbind(celltypeNums.pctOfSmple, covariates)
-  
-  #dirichlet regression for pvalues (probably should try using anova also)
-  print(celltypeNums.pctOfSmple)
-  print(covariates)
-  if (stats=="dirichlet" || stats == "all") {
-    covariates <- cbind("condition"=condition_ordering, ordering)
-    colnames(celltypeNums) <- paste0("cluster", colnames(celltypeNums))
-    counts <- data.frame(cbind(t(celltypeNums)))
-    dirichletStats <- calcDirichlet(counts, covariates)
-    write.table(dirichletStats, paste0(outdir, "/dirichlet_regression_pvals.txt"), quote = F, sep = "\t", col.names = NA)
-  } 
-  if (stats == "anova" || stats == "all") {
-    counts <- data.frame(cbind(t(celltypeNums)))
-    covariates <- data.frame("condition"=condition_ordering)
-    counts.wconds <- cbind(counts[,order(as.numeric(as.matrix(colnames(counts))))], covariates)
-    counts.wconds <- counts.wconds[order(counts.wconds$condition),]
-    pval <- c()
-    for (i in 1:(ncol(counts.wconds)-1)) { 
-      cur.stats <- counts.wconds[,c(i,ncol(counts.wconds))]
-      colnames(cur.stats) <- c("value", "condition")
-      model=lm( cur.stats$value ~ cur.stats$condition )
-      ANOVA=aov(model)
-      
-      # Tukey test to study each pair of condition :
-      TUKEY <- TukeyHSD(x=ANOVA, 'cur.stats$condition', conf.level=0.95)
-      tukey.stats <- TUKEY$`cur.stats$condition`
-      tukey.stats <- cbind(tukey.stats[,ncol(tukey.stats)], colnames(counts.wconds)[i])
-      pval <- rbind(pval, tukey.stats)
-    }
-    pval <- data.frame(pval)
-    colnames(pval) <- c("adjusted_pvalue", "cluster")
-    pval$comparison <- gsub("\\.[0-9]*$", "", rownames(pval))
-    rownames(pval) <- 1:nrow(pval)
-    write.table(pval, paste0(outdir, "/anova_tukey_pvals.txt"), quote = F, sep = "\t", col.names = NA)
-  } 
-  celltypeNums.wconds.melt <- melt(celltypeNums.wconds)
-  colnames(celltypeNums.wconds.melt) <- c("condition", "cluster",  "percent_of_sample")
-  celltypeNums.wconds.melt$cluster <- factor(celltypeNums.wconds.melt$cluster)  
-  # if (length(unique(celltypeNums.wconds.melt$condition)) == length(unique(seurat_object@meta.data$condition)))  {
-  #   celltypeNums.wconds.melt$condition <- factor(celltypeNums.wconds.melt$condition, levels = c("myometrium", "med12pos", "med12neg"))
-  # }
-  #add stats (mean and median)
-  celltypeNums.wconds.melt$median <- NA
-  celltypeNums.wconds.melt$mean <- NA
-  celltypeNums.wconds.melt$total <- NA
-  celltypeNums.wconds.melt$condition <- as.character(celltypeNums.wconds.melt$condition)
-  celltypeNums.wconds.melt$cluster <- as.character(celltypeNums.wconds.melt$cluster)
-  for (i in unique(celltypeNums.wconds.melt$cluster)) {
-    for (j in unique(celltypeNums.wconds.melt$condition)) {
-      cur.frame <- celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),]
-      median <- median(cur.frame$percent_of_sample)
-      mean <- mean(cur.frame$percent_of_sample)
-      total <- sum(cur.frame$percent_of_sample)
-      celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),"median"] <- median
-      celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),"mean"] <- mean
-      celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),"total"] <- total
-    }
-  }
-  celltypeNums.stats <- summarySEwithin(celltypeNums.wconds.melt, measurevar="percent_of_sample", withinvars=c("condition","cluster"))
-  celltypeNums.stats <- celltypeNums.stats[order(celltypeNums.stats$condition,celltypeNums.stats$cluster),]
-  celltypeNums.wconds.melt$se <- NA
-  for (i in unique(celltypeNums.wconds.melt$cluster)) {
-    for (j in unique(celltypeNums.wconds.melt$condition)) {
-      cur.frame <- celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),]
-      se <- celltypeNums.stats[which(celltypeNums.stats$condition == j & celltypeNums.stats$cluster == i), "se"]
-      celltypeNums.wconds.melt[which(celltypeNums.wconds.melt$condition == j & celltypeNums.wconds.melt$cluster == i),"se"] <- se
-    }
-  }
-  
-  condition_ordering.factor <- unique(as.vector(as.matrix(condition_ordering))) #this ordering should be able to be changed 
-  celltypeNums.wconds.melt$condition <- factor(celltypeNums.wconds.melt$condition, levels = condition_ordering.factor)
-  ggplotAndSaveBarplots(celltypeNums.wconds.melt, name, type, outdir)
-  write.table(celltypeNums.wconds, paste0(outdir, "celltypePctsWconds_", name, ".txt"), quote=F, col.names = NA, sep = "\t")
-}
-
-###
-# ggplotAndSaveBarplots() {} utilized by barPlotsWmedian() to print ggplots to dir 
-# plotdata: input dataframe for plotting
-# name: some name to use for output naming
-# type: using median or mean style figures (median currently preferred)
-# outdir: directory to output to 
-###
-ggplotAndSaveBarplots <- function(plotdata, name, type, outdir) {
-  prevdir <- getwd()
-  setwd(outdir)
-  
-  print(summary(plotdata))
-  plotdata$cluster <- factor(plotdata$cluster, levels = sort(unique(as.numeric(as.character(plotdata$cluster))), decreasing = F))
-  if (type == "median") {
-    ggplot(plotdata, aes(x=cluster, y=median, fill = condition)) + 
-      geom_bar(stat="identity", position = position_dodge(width=0.7),  width = 0.6) +
-      geom_errorbar(aes(ymin=ifelse(median-se < 0, 0,median-se), ymax=median+se),
-                    width=.2,                    # Width of the error bars
-                    position=position_dodge(.7)) + 
-      # scale_fill_manual(values=COLORSCHEME2[c(2,4,3)]) +
-      ggtitle(paste0("Median ", name)) +
-      xlab("Cluster") + 
-      ylab("Percent of Sample") +
-      theme(axis.text.x = element_text(vjust = 1, size = 14), 
-            axis.title = element_text(face = "bold", size = 16, margin = margin(0.3,0.3,0.1,0.1)),
-            panel.background = element_rect(fill="white"), 
-            panel.grid = element_blank(), 
-            axis.line.x = element_line(color = "black", size = 0.5),
-            axis.line.y = element_line(color = "black", size = 0.5),
-            plot.margin = unit(c(0.1,0.1,0.3,0.3), "in")) + 
-      scale_y_continuous(expand = c(0,0))
-    ggsave(paste0("barplot_median_", name, ".pdf"), width=12, height=7, dpi=300)
-    
-    #now make the median box plots
-    ggplot(plotdata, aes(x=cluster, y=percent_of_sample, color = condition)) + 
-      geom_boxplot() + 
-      # scale_color_manual(values=COLORSCHEME2[c(2,4,3)]) +
-      ggtitle(paste0("Median ", name)) +
-      xlab("Cluster") + 
-      ylab("Percent of Sample") +
-      theme(axis.text.x = element_text(vjust = 1, size=14), 
-            axis.title = element_text(face = "bold", size = 16, margin = margin(0.3,0.3,0.1,0.1)),
-            panel.background = element_rect(fill="white", color = "black"), 
-            panel.grid = element_blank(), 
-            axis.line.x = element_line(color = "black", size = 0.5),
-            axis.line.y = element_line(color = "black", size = 0.5),
-            plot.margin = unit(c(0.1,0.1,0.3,0.3), "in")) +
-      scale_y_continuous(expand = c(0,0))
-    ggsave(paste0("boxplot_median_", name, ".pdf"), width=12, height=7, dpi=300)
-    
-  } else if (type == "mean") {
-    #bar plot
-    ggplot(plotdata, aes(x=cluster, y=mean, fill = condition)) + 
-      geom_bar(stat="identity", position = position_dodge(width=0.7),  width = 0.6) +
-      geom_errorbar(aes(ymin=ifelse(mean-se < 0, 0,mean-se), ymax=mean+se),
-                    width=.2,                    # Width of the error bars
-                    position=position_dodge(.7)) + 
-      # scale_fill_manual(values=COLORSCHEME2[c(2,4,3)]) +
-      ggtitle(paste0("Mean ", name)) +
-      xlab("Cluster") + 
-      ylab("Percent of Sample") +
-      theme(axis.text.x = element_text(vjust = 1, size=14),
-            axis.title = element_text(face = "bold", size = 16, margin = margin(0.3,0.3,0.1,0.1)),
-            panel.background = element_rect(fill="white"), 
-            panel.grid = element_blank(), 
-            axis.line.x = element_line(color = "black", size = 0.5),
-            axis.line.y = element_line(color = "black", size = 0.5), 
-            plot.margin = unit(c(0.1,0.1,0.3,0.3), "in")) +
-      scale_y_continuous(expand = c(0,0))
-    ggsave(paste0("barplot_mean_", name, ".pdf"), width=12, height=7, dpi=300)
-    
-  } else if (type == "total") {
-    ggplot(plotdata, aes(x=cluster, y=total, fill = condition)) + 
-      geom_bar(stat="identity", position = position_dodge(width=0.7),  width = 0.6) +
-      geom_errorbar(aes(ymin=ifelse(total-se < 0, 0,total-se), ymax=total+se),
-                    width=.2,                    # Width of the error bars
-                    position=position_dodge(.7)) + 
-      # scale_fill_manual(values=COLORSCHEME2[c(2,4,3)]) +
-      ggtitle(paste0("total ", name)) +
-      xlab("Cluster") + 
-      ylab("Percent of Sample") +
-      theme(axis.text.x = element_text(vjust = 1, size=14), 
-            panel.background = element_rect(fill="white"), 
-            axis.title = element_text(face = "bold", size = 16, margin = margin(0.3,0.3,0.1,0.1)),
-            panel.grid = element_blank(),
-            axis.line.x = element_line(color = "black", size = 0.5),
-            axis.line.y = element_line(color = "black", size = 0.5),
-            plot.margin = unit(c(0.1,0.1,0.3,0.3), "in")) +
-      scale_y_continuous(expand = c(0,0))
-    ggsave(paste0("barplot_total_", name, ".pdf"), width=12, height=7, dpi=300)
-  }
-  setwd(prevdir)
-}
-
 
 #adds statistics to a barplot
 addStats <- function(x, d) {
@@ -702,6 +702,7 @@ addStats <- function(x, d) {
     
 }
 
+
 #' Performs Differential Expression testing for all idents of a seurat object, \n
 #' outputs volcano plots, de marker table, and go analysis for all comparisons \n
 #' in each cluster
@@ -709,228 +710,335 @@ addStats <- function(x, d) {
 #' @param seurat_object The seurat object.
 #' @param output The directory we want to output DE results directory to 
 #' @param comps The comparisons to perform in the form "cond1vscond2", comparing cond1 vs. cond2; both should be in "conditions" column in meta.data
-#' @param coi The 'column of interest' in the meta.data that we want to split object by to perform DE testing, ex: "seurat_clusters"
-#' @param plotinsig Whether we want to plot the genes above FDR threshold in volcano plot
-#' @param withLabels Whether we want labels in the volcano plot 
+#' @param coi The 'column of interest' in the meta.data that we want to split object by to perform DE testing, ex: "seurat_clusters" 
+#' @param with_labels Whether we want labels in the volcano plot 
 #' @param padj_thresh Adjusted pvalue threshold
-#' @param orgdb The database used for performing GO analysis, either "org.Mm.eg.db" or "org.Hs.eg.db"
-#' @param split Whether to do an "UP" and "DOWN" table for markers and GO analysis (best to keep it on)
+#' @param org_db The database used for performing GO analysis, either \
+#' "org.Mm.eg.db" or "org.Hs.eg.db", or "auto" for detecting from gene names which one s
 #' @return DE results between comps in each coi, with volcanos and GO results for each
 #'
 easyDE <- function(seurat_object, 
-                   output, comps, 
+                   output, 
+                   comps, 
                    coi="seurat_clusters", 
-                   plotinsig = TRUE, 
-                   withLabels = T,
+                   with_labels = T,
                    padj_thresh=0.05, 
-                   orgdb = "org.Mm.eg.db", 
-                   split = TRUE) {
-  req.packages <- c("clusterProfiler",
-                    "org.Hs.eg.db",
-                    "ggthemes",
-                    "enrichplot",
-                    "DOSE",
-                    "ggplot2")
+                   orgdb = "auto") {
+  if (orgdb == "auto") {
+    # check for beta-actin, a HK gene 
+    if ("ACTB" %in% rownames(seurat_object)) { # Actb is the mouse gene
+      orgdb <- "org.Hs.eg.db" 
+    } else {
+      orgdb <- "org.Mm.eg.db" 
+    }
+  } 
+  
+  # initialize path.df
+  path.df <- c()
+  
+  # notify 
+  timestamp()
+  print(paste0("Detected ", orgdb, " as database."))
+  
+  req.packages <- c("ggthemes",
+                    "ggplot2",
+                    orgdb)
   pack.mat <- sapply(req.packages, FUN = function(x) {
              if (paste0("package:",x) %in% search()) {
                return(TRUE)
              } else return(FALSE)
            } )
   if (any(!pack.mat)) {
-    print(paste0("packages: ", paste0(req.packages[pack.mat], collapse = " "), " need to be loaded or installed..."))
+    print(paste0("packages: ", paste0(req.packages[!pack.mat], collapse = " "), 
+                 " need to be loaded or installed..."))
     return(NULL)
   } else {
     print("good to go :)")
   }
   
-  if (!exists("go_analysis", where=sys.frame())) {
+  if (!exists("scRNA_pathways", where=sys.frame())) {
     print("GO function not loaded, breaking...")
     return(NULL)
   }
+  
   clusters = unique(seurat_object@meta.data[,coi])
-  for (c in clusters) {
-    clusterfolder <- paste0(output, "/cluster_", c, "_DE")
+  for (i in seq_along(clusters)) {
+    clusterfolder <- file.path(output, paste0("cluster_", clusters[i], "_DE"))
     dir.create(clusterfolder)
     
-    cluster.cells <- rownames(seurat_object@meta.data[which(seurat_object@meta.data[,coi] == c),])
+    cluster.cells <- rownames(seurat_object@meta.data[which(seurat_object@meta.data[,coi] == clusters[i]),])
     cluster.set <- subset(seurat_object, cells = cluster.cells) #only cells in this cluster
     for (comp in comps) { #
       
-      print(paste0(timeFmt(), " ----- working on ", comp, " in cluster ", c, " of object ", seurat_object@project.name))
-      compfolder <- paste0(clusterfolder, "/",comp)
+      timestamp()
+      print(paste0(" working on ", comp, " in cluster ", 
+                   clusters[i], " of object ", seurat_object@project.name))
+      compfolder <- file.path(clusterfolder, comp)
       dir.create(compfolder)
       splitted <- unlist(strsplit(comp, "vs"))
       cond1 <- splitted[1]
       cond2 <- splitted[2]
+      
       cond1.cells <- rownames(cluster.set@meta.data[which(cluster.set@meta.data$condition == cond1),])
       cond2.cells <- rownames(cluster.set@meta.data[which(cluster.set@meta.data$condition == cond2),])
-      if (length(cond1.cells) <= 3| length(cond2.cells) <=3 ) {
-        print(paste0("comp ", comp, " in cluster ", c, " has too few cells. Skipping"))
+      if (length(cond1.cells) <= 3 | length(cond2.cells) <=3 ) {
+        print(paste0("comp ", comp, " in cluster ", clusters[i],
+                     " has too few cells. Skipping"))
         next
       }
       
       cluster.set <- SetIdent(cluster.set, cells = cond1.cells, value=cond1)
       cluster.set <- SetIdent(cluster.set, cells = cond2.cells, value=cond2)
       notEnoughGenes <- tryCatch({
-        cur.de <- FindMarkers(cluster.set, ident.1 = cond1, ident.2 = cond2, min.pct = 0.1, logfc.threshold = 0.1) #only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25
+        cur.de <- FindMarkers(cluster.set, ident.1 = cond1, ident.2 = cond2, 
+                              min.pct = 0.1, logfc.threshold = 0.1) 
       }, error = function(err) {
         notEnoughGenes <- TRUE
         print(paste("Caught an error: ", err, " ...continuing on...", sep = ""))
         return(TRUE)
       })
-      if (typeof(notEnoughGenes)!="logical") {
+      if (typeof(notEnoughGenes)!="logical") { # this means an error wasn't thrown in the above tryCatch 
         notEnoughGenes <- FALSE
-        write.table(cur.de, paste0(compfolder, "/DEmarkers_", c, "_", comp, ".txt"), quote = F, sep = "\t", col.names = NA)
       }
       if (notEnoughGenes) next #this is where not enough genes is actually checked for errors
-      if (split) {
-        cur.de.up <- cur.de[which(cur.de$avg_logFC > 0 & cur.de$p_val_adj < padj_thresh),]
-        cur.de.down <- cur.de[which(cur.de$avg_logFC < 0 & cur.de$p_val_adj < padj_thresh),]
-        write.table(cur.de.up, paste0(compfolder, "/DEmarkers_", c, "_",cond1, "_sigUP", ".txt"), quote = F, sep = "\t", col.names = NA)
-        write.table(cur.de.down, paste0(compfolder, "/DEmarkers_", c, "_",cond1, "_sigDOWN", ".txt"), quote = F, sep = "\t", col.names = NA)
-      }  
       
-      # GO Analysis (from Andrew's script)
-      gofolder <- paste0(compfolder, "/GO")
-      dir.create(gofolder)
-      if (split) {
-        goUPfolder <- paste0(gofolder, "/UP")
-        dir.create(goUPfolder)
-        goDOWNfolder <- paste0(gofolder, "/DOWN")
-        dir.create(goDOWNfolder)
+      # write both of the tables
+      cur.de <- cur.de[order(cur.de$avg_log2FC,decreasing=T),]
+      write.table(cur.de, file.path(compfolder, paste0("DEmarkers_", 
+                                                       clusters[i], "_",cond1, 
+                                    "_all", ".tsv")), 
+                  quote = F, sep = "\t", col.names = NA)
+      cur.de.sig <- cur.de[cur.de$p_val_adj < padj_thresh,]
+      write.table(cur.de.sig, file.path(compfolder, paste0("DEmarkers_", 
+                                                      clusters[i], "_",cond1, 
+                                                       "_sig", ".tsv")), 
+                  quote = F, sep = "\t", col.names = NA)
+      
+      # pathway analysis 
+      go_folder <- file.path(compfolder, "GO")
+      hall_folder <- file.path(compfolder, "Hallmark")
+      dir.create(go_folder)
+      dir.create(hall_folder)
         
-        upres <- go_analysis(cur.de.up, 
-                    outdir =  goUPfolder, 
-                    orgdb = "org.Mm.eg.db",
-                    singlecomp = T)
-        downres <- go_analysis(cur.de.down, 
-                    outdir =  goDOWNfolder, 
-                    orgdb = "org.Mm.eg.db",
-                    singlecomp = T)
-        if (!upres) {
-          print("no up GO results, deleting GO folder...")
-          unlink(goUPfolder, recursive = T) #remove GO dir for cleanliness
-        }
-        if (!downres) {
-          print("no up GO results, deleting GO folder...")
-          unlink(goDOWNfolder, recursive = T) #remove GO dir for cleanliness
-        }
-        if (!upres && !downres) {
-          print("no up/down GO results, deleting GO folder...")
-          unlink(gofolder, recursive = T) #remove GO dir for cleanliness
-        }
-      } else {
-        res <- go_analysis(cur.de, 
-                    outdir =  gofolder, 
-                    orgdb = "org.Mm.eg.db",
-                    singlecomp = T)
-        if (!res) {
-          print("no GO results, deleting GO folder...")
-          unlink(gofolder, recursive = T) #remove GO dir for cleanliness
+      # submit the marker matrix to the function 
+      gsea_res.go <- scRNA_pathways(cur.de,  
+                                  outfolder =  go_folder, 
+                                  type = "go",
+                                  paths = NULL,
+                                  pathname = paste0(clusters[i],"_",comp, "_GO_paths"),
+                                  orgdb = orgdb)
+      gsea_res.h <- scRNA_pathways(cur.de, 
+                                 outfolder =  hall_folder, 
+                                 type = "hallmark", 
+                                 paths = NULL,
+                                 pathname = paste0(clusters[i],"_",comp, "_Hall_paths"),
+                                 orgdb = orgdb)
+      if (nrow(gsea_res.h) > 0) {
+        temp.h <- cbind.data.frame("pathway"=gsea_res.h$pathway, 
+                                    "pval"=gsea_res.h$pval,
+                                    "padj"=gsea_res.h$padj, 
+                                    "NES"=gsea_res.h$NES,
+                                    "celltype"=clusters[i],
+                                    "comp"=comp)
+        if (is.null(path.df) ) {
+          path.df <- temp.h
+        } else {
+          path.df <- rbind(path.df, temp.h)
         }
       }
       
-      if (withLabels) {
-        easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = T, #with labels
-                       plotinsig = F, compfolder = compfolder)
+      # volcano plots 
+      if (with_labels) {
+        easyDE.volcano(cur.de = cur.de, clust = clusters[i], 
+                       comp = comp, with_labels = T, #with labels
+                       compfolder = compfolder)
       } else {
-        easyDE.volcano(cur.de = cur.de, c = c, comp = comp, withLabels = F, #without labels
-                       plotinsig = F, compfolder = compfolder)
+        easyDE.volcano(cur.de = cur.de, clust = clusters[i], 
+                       comp = comp, with_labels = F, #without labels
+                       compfolder = compfolder)
       }
     }  
   }
+  # write all of the combined hallmark paths so that we won't \
+  #  have to collect them later down the road 
+  write.table(path.df, file=file.path(output, "all_hallmark_paths.tsv"),
+              quote=F,sep = "\t", col.names = NA)
 }
 
 
 #' Volcano Plot code for easyDE
 #' @description Prints the volcano plot for easyDE so that easyDE is easier to follow
 #' @param cur.de Requires same columns to a markers text file, with "logPadjf" = -log(pvalue) and gene names in rownames
-#' @param c current cluster from the easyDE function
+#' @param clust current cluster from the easyDE function
 #' @param comp current comparison string
-#' @param withLabels Whether we want labels in volcano
-#' @param plotinsig Whether we want to plot genes above significance threshold
+#' @param with_labels Whether we want labels in volcano
 #' @param compfolder The folder we're outputting to, already written in easyDE
 #' @return NULL 
-easyDE.volcano <- function(cur.de, c = c, comp, withLabels = TRUE, plotinsig = TRUE, compfolder) {
+easyDE.volcano <- function(cur.de, 
+                           clust = NULL, 
+                           comp = NULL, 
+                           with_labels = TRUE, 
+                           compfolder) {
   
+  if (is.null(comp)) {
+    comp <- "placeholder1vsplaceholder2"
+  }
   splitted <- unlist(strsplit(comp, "vs"))
   cond1 <- splitted[1]
   cond2 <- splitted[2]
   
   # volcano plot ----
   cur.de$logPadjf <- -log10(cur.de$p_val_adj + 1e-300)
-  volcdat <- cur.de[,grep("avg_logFC|logPadjf", colnames(cur.de))]
+  volcdat <- cur.de[,grep("avg_log2FC|logPadjf", colnames(cur.de))]
   cur.de$labels <- NA
-  if (withLabels) {
-    
-    # topLeft <- c(-300,300)
-    # topRight <- c(300,300)
-    # for (i in 1:nrow(cur.de)) {
-    #   lDist <- dist(rbind(topLeft, volcdat[i,]), method = "euclidean")
-    #   rDist <- dist(rbind(topRight, volcdat[i,]), method = "euclidean")
-    #   cur.de$lDist[i] <- lDist
-    #   cur.de$rDist[i] <- rDist
-    # }
-    # closestRight = cur.de[order(cur.de$lDist, decreasing = F),]
-    # closestLeft = cur.de[order(cur.de$lDist, decreasing = F),]
-    # closestRight.genes <- rownames(head(closestRight, n=10))
-    # closestLeft.genes <- rownames(head(closestLeft, n=10))
+  if (with_labels) {
     
     #new strategy: label top 5 genes by significance, top 5 by FC, and lowest 5 by FC
     top5.p <- head(rownames(cur.de[order(cur.de$logPadjf, decreasing = T),]), n=5)
-    top5.l2fc.up <- head(rownames(cur.de[order(cur.de$avg_logFC, decreasing = T),]), n=5)
-    top5.l2fc.down <- head(rownames(cur.de[order(cur.de$avg_logFC, decreasing = F),]), n=5)
+    top5.l2fc.up <- head(rownames(cur.de[order(cur.de$avg_log2FC, decreasing = T),]), n=5)
+    top5.l2fc.down <- head(rownames(cur.de[order(cur.de$avg_log2FC, decreasing = F),]), n=5)
     
     if (nrow(cur.de) < 20) {
-      print(paste0("cur.de for comp: ", comp, " of cluster: ",c, " in object: ", seurat_object@project.name, " has fewer than 15 DE genes"))
       cur.de$labels <- rownames(cur.de)
     } else {
-      # cur.de$labels[which(rownames(cur.de) %in% c(closestRight.genes, closestLeft.genes))] <- rownames(cur.de[which(rownames(cur.de) %in% c(closestRight.genes, closestLeft.genes)),])
-      cur.de$labels[which(rownames(cur.de) %in% c(top5.p, top5.l2fc.up, top5.l2fc.down))] <- 
-        rownames(cur.de[which(rownames(cur.de) %in% c(top5.p, top5.l2fc.up, top5.l2fc.down)),])
+      cur.de$labels[which(rownames(cur.de) %in% c(top5.p, 
+                                                  top5.l2fc.up, 
+                                                  top5.l2fc.down))] <- 
+        rownames(cur.de[which(rownames(cur.de) %in% c(top5.p, 
+                                                      top5.l2fc.up, 
+                                                      top5.l2fc.down)),])
     }
   }
   
   cur.de$coloring <- NA
-  cur.de$coloring[which(cur.de$p_val_adj < 0.05 & cur.de$avg_logFC > 1)] <- "de"
-  cur.de$coloring[which(cur.de$p_val_adj < 0.05 & cur.de$avg_logFC < 1)] <- "significant"
-  cur.de$coloring[which(cur.de$p_val_adj > 0.05 & cur.de$avg_logFC > 1)] <- "variable"
-  cur.de$coloring[which(cur.de$p_val_adj > 0.05 & cur.de$avg_logFC < 1)] <- "nothing"
-  viridis.4 <- viridis(4)
-  de.colors <- c("de"=viridis.4[1], "significant"=viridis.4[2], "variable"=viridis.4[3], "nothing"="#000000")
+  cur.de$coloring[which(cur.de$p_val_adj < 0.05 & 
+                          cur.de$avg_log2FC > 1)] <- "de"
+  cur.de$coloring[which(is.na(cur.de$coloring))] <- "not_de"
+  de.colors <- c("de"="red", 
+                 "not_de"="lightgray")
+  if (with_labels) {
+    cur.de$coloring[which(!is.na(cur.de$labels))] <- "labeled"
+    de.colors <- c(de.colors,
+                   "labeled"="blue")
+  } 
   
   cur.de$cumulative_diff_btw_clusters <- abs(cur.de$pct.2 - cur.de$pct.1)
-  r <- max(abs(cur.de$avg_logFC)) + 1
-  if (!plotinsig) {
-    print(paste0("not plotting insignificant genes for comparison: ", cond1, " vs ", cond2))
-    cur.de <- cur.de[which(cur.de$coloring != "nothing"),]
-    if (nrow(cur.de) == 0) {
-      print("no genes left after significance filtration, continuing...")
-      return(NULL)
-    }
-  }
-  volcano <- ggplot2::ggplot(data=cur.de, aes(x = avg_logFC, y = logPadjf, size=cumulative_diff_btw_clusters)) + #not yet sure how this should be colored
+  r <- max(abs(cur.de$avg_log2FC)) + 1
+
+  # make the ggplot 
+  volcano <- ggplot2::ggplot(data=cur.de, aes(x = avg_log2FC, y = logPadjf, 
+                                              size=cumulative_diff_btw_clusters)) + 
     geom_point(aes(alpha=0.5, color=coloring)) + 
     geom_text_repel(aes(label = labels), point.padding = 0.25, size = 3) +
-    geom_hline(yintercept=-log10(0.05), linetype="dashed", size=0.5, alpha = 0.4) +
-    geom_vline(xintercept=c(-1,1), linetype="dashed", size=0.5, alpha = 0.4) +
+    geom_hline(yintercept=-log10(0.05), linetype="dashed", 
+               size=0.5, alpha = 0.4) +
+    geom_vline(xintercept=c(-1,1), linetype="dashed", 
+               size=0.5, alpha = 0.4) +
     scale_color_manual(name="Diff. Expressed", values=de.colors) +
-    xlab(paste0("log2 Fold change (", cond1, "/", cond2, ")")) + scale_x_continuous(limits = c(-r, r)) +
+    scale_x_continuous(limits = c(-r, r)) +
+    xlab(paste0("log2 Fold change (", cond1, "/", cond2, ")")) + 
     ylab("-log10 adjusted p-value") +
     ggtitle(paste0(comp)) +
     guides(alpha=F) + 
-    theme_bw() + theme(legend.key.size = unit(2, 'lines'),
-                       text = element_text(size=10),
-                       legend.text=element_text(size=8), legend.key.height = unit(2, 'lines'),
-                       legend.position = "right")
-  if (withLabels) {
-    pdf(paste0(compfolder, "/volcano_", c, "_", comp, "_withLabels.pdf")) # (png)
+    theme_bw() + 
+    theme(legend.key.size = unit(2, 'lines'),
+          text = element_text(size=10),
+          legend.text=element_text(size=8), legend.key.height = unit(2, 'lines'),
+          legend.position = "right")
+  
+  if (with_labels) {
+    pdf(file.path(compfolder, 
+                  paste0("volcano_", clust, "_", comp, "_withLabels.pdf")))
   } else {
-    pdf(paste0(compfolder, "/volcano_", c, "_", comp, "_noLabels.pdf")) # (png)
+    pdf(file.path(compfolder, 
+                  paste0("volcano_", clust, "_", comp, "_noLabels.pdf")))
   }
   print(volcano)
   dev.off()
 }
+
+
+#' scRNA_pathways
+#' @description Runs the pathway analysis for a markers DE file for\
+#'  a single cell object 
+#'
+#' @param markers the markers object from performing FindMarkers() \
+#' in memory, NOT a file path
+#' @param orgdb org.Hs.eg.db or org.Mm.eg.db, for determining if we \
+#'  need to switch gene names to human or not
+#' @param outfolder the file path we'll output the results to 
+#' @param type either "hallmark" or "go" pathways
+#' @param paths the pathways we want to run 
+#' @param pathname what to call the path file output once we make a table 
+#'
+#' @return NULL
+scRNA_pathways <- function(markers,
+                           orgdb,
+                           type = "hallmark",
+                           paths = NULL,
+                           pathname,
+                           outfolder) {
+  
+  markers <- markers[order(markers$avg_log2FC, decreasing = T),]
+  rank <- markers[,"avg_log2FC"]
+  names(rank) <- rownames(markers)
+  
+  # get paths loaded
+  if (is.null(paths)) {
+    if (type == "hallmark") {
+      paths <- gmtPathways(file.path(GSEA_REF_DIR, 
+                                     "h.all.v7.4.symbols.gmt.txt"))
+    } else if (type == "go") {
+      paths <- gmtPathways(file.path(GSEA_REF_DIR, 
+                                     "c5.all.v7.4.symbols.gmt.txt"))
+    }
+  }
+  
+  # convert rank file to human genes if it's mouse
+  if (orgdb == "org.Mm.eg.db") {
+    rank <- convertMouseRanks2Hum(rank)
+  }
+
+  # run fgsea 
+  fgsea_res <- fgsea(pathways = paths,
+                     stats = rank,
+                     minSize = 15,
+                     maxSize = 500,
+                     nperm= 1000)
+  
+  # by default take the top 60 pathway rows 
+  if (nrow(fgsea_res) > 60) {
+    fgsea_res <- fgsea_res[order(abs(fgsea_res$NES),decreasing=T),]
+    fgsea_res <- head(fgsea_res, n=60)
+  }
+  fgsea_res$leadingEdge <- do.call(rbind, 
+                                       lapply(as.list(fgsea_res$leadingEdge), 
+                                                 paste, collapse=", "))
+  fgsea_res <- as.data.frame(fgsea_res)
+  fgsea_res$pathway <- factor(fgsea_res$pathway, 
+            levels=fgsea_res$pathway[order(fgsea_res$NES,decreasing=F)])
+  
+  # write table 
+  write.table(fgsea_res, file.path(outfolder, paste0(pathname, ".tsv")),
+              sep = "\t", quote = F, col.names = NA)
+  fgsea_res$significant <- ifelse(fgsea_res$padj < 0.05, "sig", "no")
+  barp_cols <- c(sig="red", no="royalblue")
+  
+  # plot 
+  pp <- ggplot(data=fgsea_res, aes(x=NES, y=pathway)) + 
+    geom_bar(aes(fill=significant),
+             stat="identity", orientation="y") + 
+    scale_fill_manual(values=barp_cols) + 
+    theme_bw() 
+  
+  pdf(file.path(outfolder,paste0(pathname, "_plot.pdf")))
+  print(pp)
+  dev.off()
+  
+  return(fgsea_res)
+}
+
+
 
 #single highlight umap subclusters for microglia, mono_dc, nk_t
 #' Highlights cells of Umaps by condition
@@ -957,6 +1065,40 @@ umap_highlight <- function(seurat_object, coi, name = "background", outdir, foc_
   }
   return(NULL)
 }
+
+#' @author https://stackoverflow.com/questions/15660829/how-to-add-a-number-of-observations-per-group-and-use-group-mean-in-ggplot2-boxp
+#' @param vshift multiplier for shifting the annotation vertically in the figure
+give.n <- function(x, vshift=1.05){
+  return(c(y = median(x)*vshift, label = length(x))) 
+}
+
+# function for mean labels
+#' @author https://stackoverflow.com/questions/15660829/how-to-add-a-number-of-observations-per-group-and-use-group-mean-in-ggplot2-boxp
+#' @param vshift multiplier for shifting the annotation vertically in the figure
+mean.n <- function(x,vshift=0.97){
+  return(c(y = median(x)*vshift, label = round(mean(x),2))) 
+}
+
+# wrapper for violin plot function in seurat, which adds the number of cells for each violin plot group 
+VlnPlot_withnums <- function(object, 
+                             features,
+                             group.by,
+                             ...
+) {
+  order = sort(as.character(unique(object@meta.data[,group.by])))
+  object@meta.data[,group.by] <- factor(object@meta.data[,group.by],
+                                        levels=order)
+  p1 <- VlnPlot(object = object, 
+                features = features,
+                group.by = group.by,
+                assay="RNA",
+                ...)
+  p1 <- p1 + stat_summary(fun.data = give.n, geom = "text", fun = median)
+  return(p1)
+}
+
+
+
 
 
 
@@ -1101,13 +1243,23 @@ feature_with_boundaries <- function(seurat_object,genes,reduction,coi) {
 #' @description Prints a correlation heatmap with Pearson R values \
 #' for two objects' samples split by each given COI
 #' @note Using spearman correlation uses raw cell numbers instead of percentages of sample
-#' 
+#' @note Version 3: returns permutation test results included in pheatmap 
 #' @param SOs A list of seurat objects to sample so1 and so2 from 
 #' @param COIs A condition of interest for each object to split heatmap by EX: COIs <- list(so1_coi, so2_coi)
 #' @param statmethod The correlation statistic, either pearson or spearman 
 #' @param cellpcts Boolean, whether we want percentage of orig.ident or raw cell numbers
+#' @param num_sim The number of simulations to run for the correlation permutation test for p-values
+#' @param noplot Whether to output a figure or not
+#' @param with_permtest Whether to add the p-values to the figure if noplot = F, or to the returned lists if noplot=T
+#' @param norm_vector An external vector to normalize sample counts by, for instance, num CD45+ cells from larger object \
+#' (only works with cellpcts=F)
 #' @return NULL (prints the figure instead)
-two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", cellpcts=T) {
+two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", 
+                                          cellpcts=T, num_sim = 10000,
+                                          noplot = F, with_permtest = T, 
+                                          norm_vector = NULL
+                                          # sample_col=NULL
+                                          ) {
   so1 <- SOs[[1]]
   so2 <- SOs[[2]]
   coi1 <- COIs[[1]]
@@ -1117,6 +1269,13 @@ two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", cellp
     print("statmethod must either be pearson or spearman, breaking...")
     return(NULL)
   }
+  # if (is.null(sample_col)) {
+  #   sample_col = "orig.isdent"
+  # } else {
+  #   if ((!sample_col %in% colnames(so1)) || (!sample_col %in% colnames(so2))) {
+  #     stop("check sample_col, one object doesn't have this column...")
+  #   }
+  # }
   if (!(all(sort(unique(so1@meta.data$orig.ident)) == sort(unique(so2@meta.data$orig.ident))))) {
     print("object orig.ident's do not match...")
     return(NULL)
@@ -1139,6 +1298,9 @@ two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", cellp
   clusters2 <- sort(unique(so2@meta.data[,coi2]))
   rownames(cor.df) <- paste0(name1, "_", clusters1)
   colnames(cor.df) <- paste0(name2, "_", clusters2)
+  if (with_permtest) {
+    cor.df.p <- cor.df #make a copy to use for p-values from permutation test
+  }
   for (i in clusters1) {
     for (j in clusters2) {
       if (cellpcts) {
@@ -1147,16 +1309,44 @@ two_object_sample_correlation <- function(SOs, COIs, statmethod="pearson", cellp
         cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering)) / 
           table(so2@meta.data$orig.ident)
       } else {
-        cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering))
-        cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering))
-      } 
+        if (is.null(norm_vector)) {
+          cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering))
+          cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering))
+        } else {
+          if (length(intersect(names(norm_vector), name.ordering)) == length(name.ordering)) { #check if the same elements are in both
+            norm_vector <- norm_vector[match(name.ordering, names(norm_vector))]
+          } else {
+            stop("norm_vector names don't match names provided by objects")
+          }
+          cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering)) / 
+            norm_vector
+          cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering)) / 
+            norm_vector
+        }
+      }
       cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
       cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
+      if (with_permtest) {
+        set.seed(415)
+        cur.permtest <- perm.cor.test(as.numeric(cur.so1), as.numeric(cur.so2), alternative = "two.sided", method = statmethod, num.sim = num_sim)
+        cor.df.p[paste0(name1, "_", i),paste0(name2, "_", j)] <- cur.permtest$p
+      }
       cor.df[paste0(name1, "_", i),paste0(name2, "_", j)] <- cor(cur.so1, cur.so2, method = statmethod)
     }
   }
-  print(pheatmap(cor.df, display_numbers=T, cluster_cols = F, cluster_rows = F, angle_col = 315))
-  return(NULL)
+  if (noplot) {
+    if (with_permtest) {
+      return(list("correlations"=cor.df, "permutation_test_pvalues"=cor.df.p))
+    } else {
+      return(list("correlations"=cor.df, "permutation_test_pvalues"=c()))
+    }
+  } else {
+    if (with_permtest) {
+      return(pheatmap(cor.df, display_numbers=cor.df.p, cluster_cols = F, cluster_rows = F, angle_col = 315))
+    } else {
+      return(pheatmap(cor.df, cluster_cols = F, cluster_rows = F, angle_col = 315))
+    }
+  }
 }
 
 #' get_sample_correlation_list
@@ -1208,7 +1398,8 @@ get_sample_correlation_list <- function(SOs, COIs, cellpcts=T) {
       } else {
         cur.so1 <- table(factor(so1@meta.data$orig.ident[which(so1@meta.data[,coi1]==i)], levels=name.ordering))
         cur.so2 <- table(factor(so2@meta.data$orig.ident[which(so2@meta.data[,coi2]==j)], levels=name.ordering))
-      } 
+      }
+      return(NULL)
       cur.so1 <- cur.so1[match(name.ordering, names(cur.so1))]
       cur.so2 <- cur.so2[match(name.ordering, names(cur.so2))]
       
@@ -1263,7 +1454,312 @@ get_cell_percents <- function(so, coi, raw=F) {
   return(cor.df)
 }
 
-####### MONOCLE FUNCTIONS
+
+#' get_cell_percents_mod
+#' @description Modification of get_cell_percents from scRNAseqFunctions.R where you can choose divisor AND dividend
+#' @param so Seurat Object
+#' @param coi1 Condition of interest 1, will be used as numerator
+#' @param coi2 Condition of interest 2, will be used as denominator
+#' @param raw Whether to output raw cell numbers or use percents (F=percents)
+#'
+#' @return
+#' @export
+#'
+#' @examples
+get_cell_percents_mod <- function(so, coi1, coi2="orig.ident", raw=F) {
+  
+  name.ordering = sort(unique(so@meta.data[,coi2]))
+  cor.df <- data.frame(matrix(nrow = length(unique(so@meta.data[,coi1])),
+                              ncol = length(unique(so@meta.data[,coi2]))))
+  clusters.in <- as.character(sort(unique(so@meta.data[,coi1])))
+  clusters.in.names <- paste0(coi2, "_", clusters.in)
+  clusters.orig <- as.character(sort(unique(so@meta.data[,coi2])))
+  rownames(cor.df) <- clusters.in
+  colnames(cor.df) <- clusters.orig
+  
+  if (raw) {
+    for (i in clusters.in) {
+      cur <- table(factor(so@meta.data[,coi2][which(so@meta.data[,coi1]==i)], levels=name.ordering))
+      cur <- cur[match(name.ordering, names(cur))]
+      cor.df[i,] <- cur
+    }
+  } else {
+    for (i in clusters.in) {
+      cur <- table(factor(so@meta.data[,coi2][which(so@meta.data[,coi1]==i)], levels=name.ordering)) / 
+        table(so@meta.data[,coi2])
+      cur <- cur[match(name.ordering, names(cur))]
+      cor.df[i,] <- cur
+    }
+  }
+  
+  return(cor.df)
+}
+
+# makes a barplot from the output of get_cell_percents_mod()
+# 20220623 | slight update: changed to print the plot an return the dataframe of pcts instead of vice versa
+cell_percents_barplot <- function(so, coi1, coi2="orig.ident", withBarplotCols = F) {
+  x <- get_cell_percents_mod(so=so, coi1=coi1, coi2=coi2)
+  x.m <- melt(x)
+  x.m$coi2 <- rep(rownames(x), length(unique(coi2)))
+  colnames(x.m) <- c(coi2, "percent_of_total_cells", coi1)
+  # print(x.m)
+  p <- ggplot(data=x.m, aes_string(x=coi2,y="percent_of_total_cells",
+                            fill=coi1)) + 
+    geom_bar(stat="identity") 
+  if (withBarplotCols) {
+    p <- p = scale_fill_manual(values=barplot_cols(length(unique(x.m[,coi1]))))
+  } 
+  print(p)
+  return(x.m)
+}
+
+
+# correlation code ----
+
+
+#' corr_gene_sig
+#' correlates a gene with a signature in a selected seurat object and returns correlation scatter
+#' @param so the seurat object to find correlation in
+#' @param gene the gene used to compare correlation against signature "sig"
+#' @param sig the vector of genes used to compare against "gene"
+#' @param signame name of signature which will be used for figure at the end
+#' @param plot boolean determining whether to plot a correlation scatter or not
+#' @return  either a correlation scatter plot or the matrix used to make such plot
+corr_gene_sig <- function(so, gene, sig, signame = "test_signature", plot=T) {
+  
+  so.temp <- AddModuleScore(so, features=list(sig), seed = 415, name="temp")
+  m <- aggregate(so.temp@meta.data$temp1 ~ so.temp@meta.data$orig.ident, 
+                 data=so.temp@meta.data, FUN="mean")
+  m.names <- m[,1]
+  m <- as.vector(m[,2])
+  names(m) <- m.names
+
+  m <- m[match(names(trem2_markers),m.names)]
+  comp <- cbind.data.frame(trem2_markers, m)
+  estimate <- summary(lm(comp$trem2_markers ~ comp$m))$coefficients[[2]]
+  rsq <- summary(lm(comp$trem2_markers ~ comp$m))$r.squared
+  if (estimate < 0) {
+    pearsonr <- -(sqrt(rsq))
+  } else {
+    pearsonr <- sqrt(rsq)
+  }
+  p <- ggplot(data=comp, aes(x=trem2_markers, y=m, label=rownames(comp))) +
+    geom_point() +
+    geom_text(hjust=-0.2,vjust=-0.2) +
+    geom_smooth(method="lm", se=F) +
+    geom_abline(intercept = 0, slope=1) +
+    labs(title=paste0("Average expression of TREM2 per tumor sample vs. \naverage expression of signature: ", name, " per tumor sample"),
+         subtitle=paste0("Pearson r = ", round(pearsonr, 4)),
+         x = "TREM2 Average Expression",
+         y = name)
+  return(p)
+}
+
+#' gene_correlation_heatmap
+#' @description This creates a heatmap of the top n genes correlated with selected gene of interest, in a single cell object\
+#' we can also split by high and low to get genes that are correlated with high expression of the selected gene 
+#' @param so 
+#' @param gene the gene we're correlating with 
+#' @param splitby whether we want to split the object by a metadata column's  factors
+#' @param cur_assay the assay ("RNA" or "integrated") we want to gather correlation expression data from
+#' @param topp a percentage representing how many genes we want to check from each object tested
+#' @param topn a number of top genes to take from each object used to make the plot
+#' @return a pheatmap object
+gene_correlation_heatmap <- function(so, gene, splitby=NULL, cur_assay="RNA", 
+                                     topn = NULL, topp = NULL) {
+  if (!is.null(splitby)) {
+    if (!(splitby %in% colnames(so@meta.data))) {
+      stop("can't find splitby column in seurat object meta data")
+    } else {
+      message(paste0("splitting objects by column: ", splitby))
+      so.list <- SplitObject(so, split.by = splitby)
+    }
+  } 
+  if (!is.null(topp) && !is.null(topn)) {
+    stop("can't choose both topp and topn")
+  }
+  
+  gcorr <- function(cur.so) {
+    message(paste0("working on: ", unique(cur.so@meta.data[,splitby])))
+    x.mat <- as.matrix(cur.so@assays[[cur_assay]]@data)
+    g.mat <- as.numeric(x.mat[gene,])
+    x.mat <- x.mat[grep(paste0("^", gene,"$"), rownames(x.mat), invert = T),] #get rid of the target gene
+    cor.rna.mat <- apply(x.mat,1,function(y){cor(g.mat,y)})
+    cor.rna.mat <- cor.rna.mat[order(cor.rna.mat, decreasing = T)]
+    return(cor.rna.mat)
+  }
+  
+  if (is.null(splitby)) {
+    
+    so.mat <- gcorr(so)
+    so.mat <- so.mat[!is.na(so.mat)]
+    if (!is.null(topn)) {
+      so.mat <- head(so.mat, n=topn)
+    }
+    if (!is.null(topp)) {
+      so.mat <- so.mat[which(so.mat > quantile(so.mat, probs=1-topp/100))]
+    } 
+    
+    so.mat <- sort(so.mat, decreasing = T)
+    cor_mat <- as.data.frame(so.mat)
+    rownames(cor_mat) <- names(so.mat)
+    
+    # returns a heatmap  
+    p.heat <- pheatmap(cor_mat, cluster_rows = F, cluster_cols=F, cellwidth = 48,cellheight = 12)
+    return(p.heat)
+    
+  } else {
+    so.list.mat <- lapply(so.list, gcorr)
+    so.list.mat <- lapply(so.list.mat, function(x){return(x[!is.na(x)])})
+    so.list.meds <- lapply(so.list.mat, median)
+    largest <- which.max(so.list.meds)
+    if (!is.null(topn)) {
+      so.list.mat <- lapply(so.list.mat, head, n=topn)
+    }
+    if (!is.null(topp)) {
+      so.list.mat <- lapply(so.list.mat, function(xy) {
+        return(xy[which(xy > quantile(xy, probs=1-topp/100))])
+      })
+    } 
+    
+    so.list.mat.gnames <- unique(Reduce(union, lapply(so.list.mat,names))) # gets  all of the possible genes from the correlation vecs
+    cor_mat <- setNames(data.frame(matrix(ncol=length(so.list.mat),
+                                 nrow=length(so.list.mat.gnames)), 
+                                 row.names = so.list.mat.gnames), names(so.list.mat))
+    for (i in 1:length(so.list.mat)) {
+      cor_mat[,i] <- so.list.mat[[i]][match(so.list.mat.gnames, names(so.list.mat[[i]]))]
+    }
+    # cor_mat[is.na(cor_mat)] <- 0
+    scheme <- apply(cor_mat, 1, function(x){return(length(x[!is.na(x)]))}) #number of columns with a non NA correlation
+    cor_mat <- cor_mat[which(scheme > (ncol(cor_mat)/2)),] # at least half of the celltypes have each gene 
+    scheme <- apply(cor_mat, 1, function(x){return(length(x[!is.na(x)]))}) #again because the last one was based off the unfiltered cor_mat
+    cor_mat <- cor_mat[order(scheme, decreasing = T),]
+    
+    # returns a heatmap  
+    p.heat <- pheatmap(cor_mat, cluster_rows = F, cluster_cols = T,
+                       cellwidth = 48, cellheight = 12)
+    return(p.heat)
+  }
+  
+}
+
+
+
+####### PATHWAY FUNCTIONS ######
+# some of these are copied over from the functionsUsed.R file
+
+# for inputting plotenrichment easier
+plot.enrichment <- function (geneset, pathway, ranked_list) {
+  plotEnrichment(geneset[[pathway]], ranked_list) + labs (title = pathway)
+}
+
+#ranks <- tibble::deframe(ranks)
+fgsea_object <- function(mypathway, rank, write_table = F) { #creates the fgsea object
+  fgsea_obj <- fgsea(pathways = mypathway,
+                     stats = rank,
+                     minSize = 15,
+                     maxSize = 500,
+                     nperm= 1000)
+  
+}
+
+processed_ranks <- function(rank) {
+  if (class(rank$log2FoldChange) != "numeric") { #if the log2FoldChange is no numeric- makes it numeric
+    rank$log2FoldChange <- as.numeric(rank$log2FoldChange)
+    
+  }
+  if(dim(rank[duplicated(rank$Gene.name),]) [1] > 0) { #checks if there are duplicates
+    dupe = rank[,"Gene.name"]
+    dupes <- rank[duplicated(dupe) | duplicated(dupe, fromLast=TRUE),] #finds the gene name
+    print("Data has duplicates, average of duplicate names was taken.")
+    show(dupes) #shows the duplicates
+    rank <- aggregate(.~Gene.name, FUN = mean, data = rank) #takes the mean of the duplicated rows
+  }
+  
+  if (any(is.na(rank)) == T) { #if there are any NA's in the ranks this will remove them
+    rank <- rank[complete.cases(rank), ]
+  }
+  rank <- tibble::deframe(rank) #makes ranks into a vector
+  rank
+}
+
+#' signif_barplot
+#'
+#' @param fgseas_obj fgsea object 
+#' @param pattern a pattern to grep for in all of the fgsea object's pathways
+#' @param mytitle what to name the plot
+#' @param stat which column in the fgsea object to threshold for
+#' @param statcutoff the threshold value for the stat 
+#' @param topn prevents the output from containing a thousand pathways by taking the top n pathways
+#' @param discrete whether to color the bars if passing/notpassing or by continuous value
+#' @return a ggplot object 
+signif_barplot <- function(fgseas_obj, 
+                           pattern = "", 
+                           mytitle, 
+                           stat="padj", 
+                           statcutoff=0.05,
+                           topn = 50,
+                           discrete=T) {
+  require(viridis)
+  if (!(stat%in%c("padj", "pval"))) {
+    stop("stat must be either \"padj\" or \"pval\"")
+  }
+  if (pattern != "") {
+    fgseas_obj <- fgseas_obj[grep(pattern, fgseas_obj$pathway),]
+    if (nrow(fgseas_obj) == 0) {
+      warning(paste0("no pathways match this pattern (", 
+                     pattern ,") printing an empty figure..."))
+    }
+  }
+  fgseas_obj$pathway <- gsub("^[^_]*_*", "\\1", fgseas_obj$pathway) #removes up to and including the first underscore of each pathway
+  fgseaRes_tidy <- fgseas_obj %>% as_tibble() %>% arrange(desc(NES))
+  if (nrow(fgseas_obj) > topn) { 
+    fgseaRes_tidy <- fgseaRes_tidy %>% slice_head(n=topn)
+  }
+  if (discrete) {
+    ggplot(fgseaRes_tidy, aes(reorder(pathway, NES), NES)) +
+      geom_col(aes(fill = padj < statcutoff)) + coord_flip() +
+      labs(x = "Pathway", y = "Normalized Enrichment Score", title = mytitle, fill = "") +
+      theme(axis.text.y = element_text(size = 5)) +
+      scale_fill_discrete(name = paste0("padj <", statcutoff))
+  } else {
+    ggplot(fgseaRes_tidy, aes(reorder(pathway, NES), NES))+
+      geom_col(aes(fill = padj)) + coord_flip() +
+      viridis::scale_fill_viridis(option="A" , direction = -1, limits=c(0,1)) + 
+      labs(x = "Pathway", y = "Normalized Enrichment Score", title = mytitle, fill = "") +
+      theme(axis.text.y = element_text(size = 5)) 
+  }
+}
+
+#' fgsea_barplot_hallmark
+#'
+#' @param rankfile_loc the location of the .rnk file 
+#' @param hallmark.pathway the pathway object (default is hallmark, which needs to be loaded) 
+#' @param GO.pathway the go pathway object
+#' @param fromfile 
+#'
+#' @return
+#' @export
+#'
+#' @examples
+fgsea_barplot_hallmark <- function(rankfile_loc,
+                                   hallmark.pathway=hallmark.pathway,
+                                   GO.pathway=GO.pathway,
+                                   fromfile=T
+) {
+  if (!fromfile) {
+    ranks <- rankfile_loc
+  } else {
+    ranks <- read.table(rankfile_loc, header = T,
+                        colClasses = c("character", "numeric"), stringsAsFactors = F)
+  }
+  rank <- processed_ranks(ranks)
+  hallmark_object <- fgsea_object(hallmark.pathway, ranks, write_table = T)
+  signif_barplot(hallmark_object, "hallmark genes")
+}
+
+
+####### MONOCLE FUNCTIONS ######
 
 #' Start with either monocle or seurat object, process and return object with default monocle settings
 #' 
@@ -1422,7 +1918,7 @@ get_pct_melt <- function(monocle_obj,
   }
   return(cur.tab.pct.melt)
 }
- 
+
 #' Helpful function for plotting the percent of coi and State on top of each other
 #'
 #' @param monocle_obj The monocle object used to make the figure, must have already done orderCells()
@@ -1468,6 +1964,183 @@ pseudotime_pct_plt <- function(monocle_obj,
 
 
 
+# SPATIAL SEURAT -----
+
+# use graph to identify relationships of cell-cell interaction
+# load in all of the spot locations via csvs in raw data (<sample>/outs/spatial/tissue_positions_list.csv)
+#' Adds an adjacency matrix to a seurat object using igraph package 
+#' @description Returns a seurat object with an igraph added to seurat_obj@graphs$spatial
+#' @param seurat_obj the seurat object that we're adding an adjacency list to 
+#' @param file the file (usually called tissue_positions_list.csv) that 
+#' @param meta colnames in seurat_obj@meta.data that we want to keep for spot meta information in the graph
+#' @param debug prints messages that will help with debugging
+#' @return the same seurat object, but with a graph object added to seurat_obj@graphs$spatial
+graph_lattice_from_seurat <- function(seurat_obj, meta, debug=T) {
+  requires(igraph)
+  requires(dplyr)
+  requires(Seurat)
+  
+  # lazy, just wait for it to error instead of checking if exists
+  spot_loc <- cbind(rownames(seurat_obj@images$slice1@coordinates), 
+                    seurat_obj@images$slice1@coordinates)
+  
+  # should have these columns every time, unless spaceranger wasn't run, or 10x changes the code output 
+  colnames(spot_loc) <- c("barcode", 
+                          "in_tissue", 
+                          "array_row", 
+                          "array_col", 
+                          "pxl_row_in_fullres", 
+                          "pxl_col_in_fullres")
+  spot_loc <- spot_loc[which(spot_loc$in_tissue == 1),]
+  
+  # merge meta data with spot_loc
+  spots_meta <- merge(spot_loc, 
+                      seurat_obj@meta.data, 
+                      by.x = "barcode",
+                      by.y = "row.names")
+  if (nrow(spots_meta) < nrow(spot_loc)) {
+    stop("spot barcodes don't align, exiting...")
+  }
+  
+  spots_meta <- spots_meta[,c("barcode", 
+                              "in_tissue", 
+                              "array_row", 
+                              "array_col", 
+                              "pxl_row_in_fullres", 
+                              "pxl_col_in_fullres",
+                              meta)]
+  
+  spots_meta <- spots_meta[order(spots_meta$array_row, 
+                                 spots_meta$array_col, 
+                                 decreasing = F),]
+  newgraph <- make_empty_graph(directed=F) #initialize it the only way I know how...
+  for (i in 1:nrow(spot_loc)) {
+    v.attr <- as.list(spots_meta[i,]) # can just take all cols, already filtered
+    newgraph <- add_vertices(graph=newgraph, nv=1,
+                             attr = v.attr)
+  }
+  for (i in V(newgraph)) {
+    cur <- c(V(newgraph)[i]$array_row,
+             V(newgraph)[i]$array_col)
+    
+    # all necessary surrounding edges to add
+    surrounding <- list(c(cur[1],cur[2]+2), # +2 because in the same row we skip a column in the array; same row, right
+                        c(cur[1]+1,cur[2]+1), # below to the right
+                        c(cur[1]+1,cur[2]-1)) # below to the left
+    
+    # need to check to make sure a candidate vertex exists before we make an edge with it 
+    for (j in surrounding) {
+      # if location is missing from the graph, skip this new vertex, it's probably a border edge
+      if (!any(j[1] == V(newgraph)$array_row & 
+               j[2] == V(newgraph)$array_col)){
+        if (debug) message(paste0("surrounding vertex at position: (", j[1], ",", j[2], ") doesn't exist..."))
+        next
+      }
+      
+      # get the actual vertex in the graph (usually just 1 number, the position in the vertex array of newgraph)
+      # can just get the order because that's the name of the vertex
+      cur.sur <- which(V(newgraph)$array_row == j[1] & V(newgraph)$array_col == j[2])
+      cur.edge <- c(i,cur.sur) # undirected: order doesn't matter...
+      
+      #####  shouldn't need to check for duplicate edges anymore because we're only using the 3 vertices in front of a vertex
+      ## if this becomes a problem, just use overloaded function igraph::unique() on the graph at the end...
+      
+      # add the edge, we know it's fine to do so
+      if (debug) message(paste0("adding edge: ", cur.edge[1], " - ", cur.edge[2]))
+      newgraph <- add_edges(newgraph, cur.edge)
+    }
+  }
+  seurat_obj@graphs$spatial <- newgraph
+  message("done.")
+  return(seurat_obj)
+}
+
+
+#' @title spat_from_seurat
+#' @description  create a spatstat graph with a seurat object 
+#' @param object the seurat object to be used
+#' @param feats any features to be added to the meta data of the spatstat points
+#' @param assay we want to use from the seurat object
+#' @return a spatstat point pattern object
+#' @importFrom spatstat.geom ppp 
+spat_from_seurat <- function(object=NULL, 
+                             feats=NULL, 
+                             assay="spatial") {
+  DefaultAssay(object) <- assay
+  cf <- object@images$slice1@coordinates
+  if (!is.null(feats)) {
+    feat_df <- FetchData(object, feats)
+  }
+  # reverse the y values
+  cf$imagerow <- range_y[2] - cf$imagerow
+  
+  range_x <- c(min(cf$imagecol), max(cf$imagecol))
+  range_y <- c(min(cf$imagerow), max(cf$imagerow))
+  
+  # create the ppp
+  spat_object <- ppp(x=cf$imagecol, 
+                     y=cf$imagerow,
+                     xrange=range_x,
+                     yrange=range_y,
+                     marks=feat_df)
+  return(spat_object)
+}
+
+
+
+
+
 
                         
 
+# ggplot custom theme
+theme_v1 <- function(){ 
+  #font <- "Georgia"   #assign font family up front
+  
+  theme_bw() %+replace%    #replace elements we want to change
+    
+    theme(
+      
+      #grid elements
+      # panel.grid.major = element_blank(),    #strip major gridlines
+      # panel.grid.minor = element_blank(),    #strip minor gridlines
+      # axis.ticks = element_blank(),          #strip axis ticks
+      
+      #since theme_minimal() already strips axis lines, 
+      #we don't need to do that again
+      
+      #text elements
+      # plot.title = element_text(             #title
+      #   family = font,            #set font family
+      #   size = 20,                #set font size
+      #   face = 'bold',            #bold typeface
+      #   hjust = 0,                #left align
+      #   vjust = 2),               #raise slightly
+      
+      # plot.subtitle = element_text(          #subtitle
+      #   family = font,            #font family
+      #   size = 14),               #font size
+      # 
+      # plot.caption = element_text(           #caption
+      #   family = font,            #font family
+      #   size = 9,                 #font size
+      #   hjust = 1),               #right align
+      # 
+      # axis.title = element_text(             #axis titles
+      #   family = font,            #font family
+      #   size = 10),               #font size
+      # 
+      # axis.text = element_text(              #axis text
+      #   family = font,            #axis famuly
+      #   size = 9),                #font size
+      
+      axis.text.x = element_text(            #margin for axis text
+        margin=margin(5, b = 10),
+        angle=45, 
+        hjust=1,
+        vjust=1)
+      
+      #since the legend often requires manual tweaking 
+      #based on plot content, don't define it here
+    )
+}
